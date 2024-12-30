@@ -1,0 +1,7 @@
+In-Game Inferencing Sample Release Notes
+
+Notes:
+  - This version of the sample requires:
+	- Minimum RTX4090 (preferred) or RTX4080 GPU
+	- Minimum NVIDIA RTX r555 driver
+  - When using audio recording for speech recognition, ensure that your desired microphone is correctly set in the Windows settings

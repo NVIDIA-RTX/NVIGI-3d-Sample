@@ -1,0 +1,9 @@
+_bin/
+_build/
+_package/
+.vs
+nvigi_plugins/
+nvigi_core/
+nvigi_downloader/
+amd_ags
+tools/cmake-windows-x86_64/*
