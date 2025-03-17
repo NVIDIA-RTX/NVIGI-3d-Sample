@@ -57,7 +57,8 @@ struct NVIGIContext
         AVAILABLE_CLOUD,
         AVAILABLE_DOWNLOADER, // Not yet supported
         AVAILABLE_DOWNLOADING, // Not yet supported
-        AVAILABLE_MANUAL_DOWNLOAD
+        AVAILABLE_MANUAL_DOWNLOAD,
+        UNAVAILABLE
     };
     struct PluginModelInfo
     {
@@ -67,14 +68,32 @@ struct NVIGIContext
         std::string m_guid;
         std::string m_modelRoot;
         std::string m_url;
+        size_t m_vram;
         nvigi::PluginID m_featureID;
         ModelStatus m_modelStatus;
     };
-    enum DownloaderStatus {
-        DOWNLOADER_IDLE,
-        DOWNLOADER_ACTIVE,
-        DOWNLOADER_SUCCESS,
-        DOWNLOADER_FAILURE
+
+    struct PluginBackendChoices
+    {
+        nvigi::PluginID m_nvdaFeatureID;
+        nvigi::PluginID m_gpuFeatureID;
+        nvigi::PluginID m_cloudFeatureID;
+        nvigi::PluginID m_cpuFeatureID;
+    };
+
+    struct StageInfo
+    {
+        PluginModelInfo* m_info{};
+        nvigi::InferenceInstance* m_inst{};
+        // Model GUID to info maps (maps model GUIDs to a list of plugins that run it)
+        std::map<std::string, std::vector<PluginModelInfo*>> m_pluginModelsMap{};
+        PluginBackendChoices m_choices{};
+        std::atomic<bool> m_ready = false;
+        std::atomic<bool> m_running = false;
+        std::mutex m_callbackMutex;
+        std::condition_variable m_callbackCV;
+        std::atomic<nvigi::InferenceExecutionState> m_callbackState;
+        size_t m_vramBudget{};
     };
 
     NVIGIContext() {}
@@ -101,10 +120,13 @@ struct NVIGIContext
     void LaunchASR();
     void LaunchGPT(std::string prompt);
 
-    bool ModelsComboBox(const std::string& label, const std::vector<std::string>& values, const std::vector<ModelStatus>* available, 
-        int32_t& value, bool disabled = false);
-    void BuildASRUI();
-    void BuildGPTUI();
+    bool ModelsComboBox(const std::string& label, bool automatic,
+        StageInfo& stage,
+        NVIGIContext::PluginModelInfo*& value);
+    bool SelectAutoPlugin(const StageInfo& stage, const std::vector<PluginModelInfo*>& options, PluginModelInfo*& model);
+    bool BuildModelsSelectUI();
+    void BuildModelsStatusUI();
+    void BuildChatUI();
     void BuildUI();
 
     static void PresentStart(donut::app::DeviceManager& manager) {};
@@ -114,32 +136,60 @@ struct NVIGIContext
     virtual nvigi::GPTCreationParameters* GetGPTCreationParams(bool genericInit, const std::string* modelRoot = nullptr);
     virtual nvigi::ASRWhisperCreationParameters* GetASRCreationParams(bool genericInit, const std::string* modelRoot = nullptr);
 
-    void ReloadGPTModel(int32_t index);
-    void ReloadASRModel(int32_t index);
+    void ReloadGPTModel(PluginModelInfo* newInfo);
+    void ReloadASRModel(PluginModelInfo* newInfo);
     void FlushInferenceThread();
 
-    PluginModelInfo* GetGPTPluginModel(int32_t index) { return (index < 0) ? nullptr : m_gptPluginModels[index]; }
-    PluginModelInfo* GetASRPluginModel(int32_t index) { return (index < 0) ? nullptr : m_asrPluginModels[index]; }
+    StageInfo m_asr;
+    StageInfo m_gpt;
 
-    bool AnyGPTModelsAvailable()
-    {
-        for (auto& info : m_gptPluginModels)
-        {
-            ModelStatus status = info->m_modelStatus;
-            if (status == ModelStatus::AVAILABLE_LOCALLY)
-                return true;
-        }
-        return false;
-    }
+    std::string m_nvdaKey = "";
+    std::string m_openAIKey = "";
 
-    bool AnyASRModelsAvailable()
+    bool GetCloudModelAPIKey(const PluginModelInfo& info, const char* & key, std::string& apiKeyName)
     {
-        for (auto& info : m_asrPluginModels)
+        if (info.m_url.find("integrate.api.nvidia.com") != std::string::npos)
         {
-            ModelStatus status = info->m_modelStatus;
-            if (status == ModelStatus::AVAILABLE_LOCALLY)
-                return true;
+            if (m_nvdaKey.empty())
+            {
+                const char* ckey = getenv("NVIDIA_INTEGRATE_KEY");
+                if (ckey)
+                {
+                    m_nvdaKey = ckey;
+                }
+                else
+                {
+                    apiKeyName = "NVIDIA_INTEGRATE_KEY";
+                    return false;
+                }
+            }
+            key = m_nvdaKey.c_str();
+            return true;
         }
+        else if (info.m_url.find("openai.com") != std::string::npos)
+        {
+            if (m_openAIKey.empty())
+            {
+                const char* ckey = getenv("OPENAI_KEY");
+                if (ckey)
+                {
+                    m_openAIKey = ckey;
+                }
+                else
+                {
+                    apiKeyName = "OPENAI_KEY";
+                    return false;
+                }
+            }
+            key = m_openAIKey.c_str();
+            return true;
+        }
+        else
+        {
+            apiKeyName = "UNKNOWN SERVICE";
+            donut::log::warning("Unknown cloud model URL (%s); cannot send authentication token", info.m_url.c_str());
+        }
+
         return false;
     }
 
@@ -155,21 +205,11 @@ struct NVIGIContext
     nvigi::PluginAndSystemInformation* m_pluginInfo;
 
     nvigi::IGeneralPurposeTransformer* m_igpt{};
-    nvigi::InferenceInstance* m_gpt{};
     nvigi::IAutoSpeechRecognition* m_iasr{};
-    nvigi::InferenceInstance* m_asr{};
     nvigi::IHWICuda* m_cig{};
 
     std::string grpcMetadata{};
     std::string nvcfToken{};
-
-    std::vector<PluginModelInfo*> m_asrPluginModels{};
-    std::vector<PluginModelInfo*> m_gptPluginModels{};
-
-    std::atomic<bool> m_asrReady = false;
-    std::atomic<bool> m_gptReady = false;
-    std::atomic<bool> m_asrRunning = false;
-    std::atomic<bool> m_gptRunning = false;
 
     bool m_recording = false;
     std::atomic<bool> m_gptInputReady = false;
@@ -179,23 +219,23 @@ struct NVIGIContext
     std::vector<uint8_t> m_wavRecording;
     bool m_conversationInitialized = false;
 
+    bool m_modelSettingsOpen = false;
+    bool m_automaticBackendSelection = false;
+
     std::thread* m_inferThread{};
     std::atomic<bool> m_inferThreadRunning = false;
     std::thread* m_loadingThread{};
 
-    int32_t                            m_asrIndex = -1;
-    int32_t                            m_gptIndex = -1;
-    std::mutex                          m_gptCallbackMutex;
-    std::condition_variable             m_gptCallbackCV;
-    bool                                m_downloadEnded = true;
-    std::atomic<nvigi::InferenceExecutionState> m_gptCallbackState;
     AudioRecordingHelper::RecordingInfo* m_audioInfo{};
+
+    nvigi::D3D12Parameters* ChainD3DInfo(PluginModelInfo* info);
 
 #ifdef USE_DX12
     nvigi::D3D12Parameters* m_d3d12Params{};
     nvrhi::RefCountPtr<IDXGIAdapter3> m_targetAdapter;
 #endif
     nvrhi::GraphicsAPI m_api = nvrhi::GraphicsAPI::D3D12;
+    size_t m_maxVRAM = 0;
 };
 
 struct cerr_redirect {

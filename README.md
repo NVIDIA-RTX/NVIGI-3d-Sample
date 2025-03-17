@@ -1,9 +1,7 @@
 # NVIGI 3D Sample
-Version 1.0.0
+Version 1.1.0
 
 This project combines NVIGI and Donut (https://github.com/NVIDIAGameWorks/donut) to create a sample app demonstrating an NVIGI AI integration.
-
-For high-level details of NVIGI, as well as links to the official downloads for the product, see [NVIDIA In-Game Inferencing](https://developer.nvidia.com/rtx/in-game-inferencing)
 
 > **IMPORTANT:**
 > For important changes and bug fixes included in the current release, please see the release notes at the end of this document BEFORE use.
@@ -48,7 +46,7 @@ There are several steps that are required in order to be able to use all of the 
 
 The model directories under `<ROOT>/nvigi.models` will, in some cases, include a Windows batch file named `download.bat`.  Double-clicking these files will download publicly-available models that can be used in the sample once downloaded.  These are referred to as "manually downloaded" models.  Other directories will include a `README.txt` file that describes how to download and set up the model; these are commonly NVIDIA NGC models that require the developer to be signed into their authorized developer account on NGC in order to access them.  See the `README.txt` for the model in question for details.
 
-At the very least, in order to run the 3D Sample, we recommend downloading at **least** one `nvigi.plugin.asr.ggml` and one `nvigi.plugin.gpt.ggml` model to avoid an error dialog in the Sample that indicates no local models are available.
+At the very least, in order to run the 3D Sample, we recommend downloading at **least** one `nvigi.plugin.asr.ggml` and one `nvigi.plugin.gpt.ggml` to avoid an error dialog in the Sample that indicates no local models are available.
 
 ### Setting up the GPT Cloud Plugin
 
@@ -92,18 +90,74 @@ To run the rebuilt sample from within the debugger, see the section below "Runni
 
 ### Using the Sample
 
-The sample will show some loading text in the UI box on the left side of the window, and will show a 3D rendered scene at the same time.  Once the models are loaded, there will be dropdowns to select the desired ASR (speech recognition) and GPT (LLM) models.  The UI shows three different forms of model, based upon its availability:
-- Available locally; These models have been downloaded manually and are sitting in the `pathToModels`.  These can be selected and will be immediately loaded.  They are shown as a selectable plugin/model name with no additional text in the UI.
-- Available for manual download"; These models are not available locally but can be downloaded manually from within the `nvigi.models` tree.  These are unselectable in the UI and include the UI text `MANUAL DOWNLOAD`.
+#### Main UI Page
+
+```{image} docs/media/main_ui.png
+:alt: main_ui
+:align: center
+```
+
+On launch, the sample will show a UI box on the left side of the window as shown above, and will show a 3D rendered scene at the same time.  This is the main UI mode.  At the top are GPU, system and performance info.  Directly below is the chat text window, which shows the results of GPT (and of ASR when used).  Below this are the interaction controls for ASR and GPT.  Details of their use are below.  At the bottom is a listing of the current models/backends in use and the "Model Settings..." button that switches to model selection and settings mode.
+
+The main UI page includes controls that allow the user to type in queries to the LLM or record a spoken query to be converted to text by ASR and then passed to the LLM.  In addition, the "Reset Chat" button clears the chat window **and** resets the LLM's history context, "forgetting" previous discussion.  Typed and spoken input is handled as follows:
+
+1. **Speech**.  Click the "Record" button to start recording (the "Record" button will be replaced by a "Stop" button.  Then, speak a question, and conclude by pressing the "Stop" button.  The ASR plugin will compute speech recognition and print the recognized text, which will then be sent to the LLM for a response that will be printed in the UI.  If the text returned from ASR is a form of "[BLANK AUDIO]", then check you Windows microphone settings, as the audio may not be getting routed correctly in Windows. To test different microphones, user should select microphone from Windows settings.  The model shipping with this release is the Whisper Small Multi-lingual, which supports a *wide* range of languages, with varying levels of quality/coverage.
+1. **Typing**.  Click in the small, blank text line at the bottom of the UI, type your query and press the Enter or Return key.  The text will be sent to the LLM and the result printed to the UI.
+
+#### Model Settings UI Pages
+
+To change the selected models, the UI provides two modes: Manual and Automatic.  To switch to the Settings page, click the "Model Settings..." triangle at the bottom of the Main UI page.  This will show the currently-enabled settings page, which initially defaults to the Manual Settings page:
+
+```{image} docs/media/maual_settings_ui.png
+:alt: manual_settings_ui
+:align: center
+```
+
+Upon switching to the Manual Settings page, the UI contains:
+- The current stats as shown in the Main UI page
+- A checkbox to switch between the Manual and Automatic backend selection modes
+- The currently-selected model/backend pairs for each feature
+- Drop-downs to select a model/backend pairing for each feature
+
+In Manual mode, the drop-downs show all model/backend pairings available, grouped by model.  For example:
+
+```{image} docs/media/manual_settings_dropdown.png
+:alt: manual_settings_dropdown
+:align: center
+```
+
+Note that both local CUDA and remote cloud backends are shown for the model "llama-3.2-3b-instruct".  There may be multiple available backends for some models.
 
 Selecting each type of model behaves slightly differently:
 - Selecting locally-available models will immediately load the model from disk.  This will disable ASR or GPT until the new model is loaded, as the sample shuts down the previous model before loading the new one.  
 - Selecting a cloud model will make a connection to the cloud.  Generally, the UI will be immediately available again, as there is no local loading to be done.
 
-Having selected the desired models, one may provide input in the form of a question in one of two ways:
+Clicking the "Automatic Backend Selection" checkbox will switch to the Automatic Settings page:
 
-1. **Speech**.  Click the "Record" button and speak a question, then press the "Stop" button.  The ASR plugin will compute speech recognition and print the recognized text, which will then be sent to the LLM for a response that will be printed in the UI.  If the text returned from ASR is a form of "[BLANK AUDIO]", then check you Windows microphone settings, as the audio may not be getting routed correctly in Windows. To test different microphones, user should select microphone from Windows settings.  The model shipping with this release is the Whisper Small Multi-lingual, which supports a *wide* range of languages, with varying levels of quality/coverage.
-1. **Typing**.  Click in the small, blank text line at the bottom of the UI, type your query and press "Send".  The text will be sent to the LLM and the result printed to the UI.
+```{image} docs/media/auto_settings_ui.png
+:alt: auto_settings_ui
+:align: center
+```
+
+This page is similar to the Manual Settings UI with some important differences:
+- Each feature dropdown only shows models, not backends.  Each model will appear once
+- Each feature has an integer VRAM budget adjustment that sets the amount of VRAM that the model may use.
+
+```{image} docs/media/auto_settings_dropdown.png
+:alt: auto_settings_dropdown
+:align: center
+```
+
+Unlike Manual mode, the user only selects a model in Automatic mode.  The backend is selected automatically by code in the sample.  Currently, that code selects in the following order:
+
+1. If an NVIDIA GPU is present and a CUDA-based backend that is within the VRAM budget exists, select it
+1. If a GPU is present and a GPU-based backend that is within the VRAM budget exists, select it
+1. If a cloud API key is set for the domain (via the environment variables) and a matching cloud backend exists, select it
+1. Select a CPU backend if available.
+
+Adjusting the VRAM budget for a given feature can cause a new backend to be selected as the user is interacting.
+
+This selection metric can be changed by changing the behavior of the function `SelectAutoPlugin` in `NVIGIContext.cpp`.
 
 ### Logging from the Sample
 
@@ -118,10 +172,10 @@ These logs include such information as; Creation, System Information/Capabilitie
 [2024-06-13 08:57:14.706][nvigi][info][framework.cpp:486][nvigiInitImpl] Overriding settings with parameters from 'E:\sample\_bin\/nvigi.core.framework.json'
 [2024-06-13 08:57:14.707][nvigi][info][framework.cpp:512][nvigiInitImpl] Starting 'nvigi.core.framework':
 [2024-06-13 08:57:14.707][nvigi][info][framework.cpp:513][nvigiInitImpl] # timestamp: Mon Jun 10 16:39:03 2024
-[2024-06-13 08:57:14.707][nvigi][info][framework.cpp:514][nvigiInitImpl] # version: 1.0.0
+[2024-06-13 08:57:14.707][nvigi][info][framework.cpp:514][nvigiInitImpl] # version: 1.1.0
 [2024-06-13 08:57:14.707][nvigi][info][framework.cpp:515][nvigiInitImpl] # build: branch  - sha 5261ff60dc5fcf6c53392cbed01d2205bf911199
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:516][nvigiInitImpl] # author: NVIDIA
-[2024-06-13 08:57:14.708][nvigi][info][framework.cpp:517][nvigiInitImpl] # host SDK: 1.0.0
+[2024-06-13 08:57:14.708][nvigi][info][framework.cpp:517][nvigiInitImpl] # host SDK: 1.1.0
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:101][addInterface] [nvigi.core.framework] added interface '8ffd0ca2-62a0-4f4a-8840e27e3ff4f75f'
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:101][addInterface] [nvigi.core.framework] added interface '8a6572e0-f713-44c7-a2bf8493a9499eb2'
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:101][addInterface] [nvigi.core.framework] added interface '75e7a7bb-ca10-45a8-966db99000d6ea35'
@@ -140,7 +194,7 @@ These logs include such information as; Creation, System Information/Capabilitie
 [2024-06-13 08:57:14.742][nvigi][info][framework.cpp:301][enumeratePlugins] # id: 2654567f-2cf4-4e4e-95455da839695c43
 [2024-06-13 08:57:14.743][nvigi][info][framework.cpp:302][enumeratePlugins] # crc24: 0x87c5d4
 [2024-06-13 08:57:14.744][nvigi][info][framework.cpp:303][enumeratePlugins] # description: 'ggml backend implementation for the 'asr' inference'
-[2024-06-13 08:57:14.745][nvigi][info][framework.cpp:304][enumeratePlugins] # version: 1.0.0
+[2024-06-13 08:57:14.745][nvigi][info][framework.cpp:304][enumeratePlugins] # version: 1.1.0
 [2024-06-13 08:57:14.745][nvigi][info][framework.cpp:305][enumeratePlugins] # build: branch  - sha 5261ff60dc5fcf6c53392cbed01d2205bf911199
 [2024-06-13 08:57:14.746][nvigi][info][framework.cpp:306][enumeratePlugins] # author: 'NVIDIA'
 [2024-06-13 08:57:14.746][nvigi][info][framework.cpp:309][enumeratePlugins] # interface: {f0038a35-eec2-4230-811d58c9498671bc} v1
@@ -179,7 +233,7 @@ If they *do not* already exist, the following junctions would be needed/expected
 1. Make a junction link between `<ROOT>/nvigi.models` and the models tree, i.e.`<ROOT>/plugins/sdk/data/nvigi.models` in standard layout, do the following:
 
     `mklink /j nvigi.models ..\plugins\sdk\data\nvigi.models`
-1. Make a junction link between `<ROOT>/nvigi.models` and the test data tree, i.e.`<ROOT>/pugins/sdk/data/nvigi.test` in standard layout, do the following:
+1. Make a junction link between `<ROOT>/nvigi.test` and the test data tree, i.e.`<ROOT>/pugins/sdk/data/nvigi.test` in standard layout, do the following:
 
     `mklink /j nvigi.test ..\plugins\sdk\data\nvigi.test`
 
@@ -234,7 +288,7 @@ The Sample uses CMake to generate the build files.  We wrap the command line in 
 
 > NOTE: Owing to an issue in the current build setup, we strongly recommend that when switching from one build config to another (e.g. from Production to Release), in order to build that config, do one of the following:
 > - Touch a Sample source file before building to force a compile/relink
-> - Delete `_bin\NVAIMSample.exe` before building to force a relink
+> - Delete `_bin\NVIGISample.exe` before building to force a relink
 > - Do a full rebuild, not a minimal build
 >
 > A fix is slated for a coming release

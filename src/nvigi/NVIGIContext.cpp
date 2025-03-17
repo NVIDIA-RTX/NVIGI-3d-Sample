@@ -26,6 +26,7 @@
 #include <nvigi_gpt_onnxgenai.h>
 #include <nvigi_security.h>
 #include <source/utils/nvigi.dsound/player.h>
+#include <nvigi_stl_helpers.h>
 
 #include <assert.h>
 #include <atomic>
@@ -66,6 +67,8 @@ PFun_nvigiShutdown* m_nvigiShutdown{};
 PFun_nvigiLoadInterface* m_nvigiLoadInterface{};
 PFun_nvigiUnloadInterface* m_nvigiUnloadInterface{};
 
+const static nvigi::PluginID nullPluginId = { 0, 0 };
+
 static std::wstring GetNVIGICoreDllLocation() {
 
     char path[PATH_MAX] = { 0 };
@@ -87,6 +90,26 @@ static std::wstring GetNVIGICoreDllLocation() {
     return dllPath;
 }
 
+static std::wstring GetNVIGICoreDllPath() {
+
+    char path[PATH_MAX] = { 0 };
+#ifdef _WIN32
+    if (GetModuleFileNameA(nullptr, path, dim(path)) == 0)
+        return std::wstring();
+#else // _WIN32
+    // /proc/self/exe is mostly linux-only, but can't hurt to try it elsewhere
+    if (readlink("/proc/self/exe", path, std::size(path)) <= 0)
+    {
+        // portable but assumes executable dir == cwd
+        if (!getcwd(path, std::size(path)))
+            return ""; // failure
+    }
+#endif // _WIN32
+
+    auto basePath = std::filesystem::path(path).parent_path();
+    return basePath;
+}
+
 NVIGIContext& NVIGIContext::Get() {
     static NVIGIContext instance;
     return instance;
@@ -106,21 +129,21 @@ bool NVIGIContext::CheckPluginCompat(nvigi::PluginID id, const std::string& name
             if (plugin->requiredAdapterVendor != nvigi::VendorId::eAny && plugin->requiredAdapterVendor != nvigi::VendorId::eNone && 
                 (!adapterInfo || plugin->requiredAdapterVendor != adapterInfo->vendor))
             {
-                donut::log::error("Plugin %s could not be loaded on adapters from this GPU vendor (found %0x, requires %0x)", name.c_str(),
+                donut::log::warning("Plugin %s could not be loaded on adapters from this GPU vendor (found %0x, requires %0x)", name.c_str(),
                     adapterInfo->vendor, plugin->requiredAdapterVendor);
                 return false;
             }
 
             if (plugin->requiredAdapterVendor == nvigi::VendorId::eNVDA && plugin->requiredAdapterArchitecture > adapterInfo->architecture)
             {
-                donut::log::error("Plugin %s could not be loaded on this GPU architecture (found %d, requires %d)", name.c_str(),
+                donut::log::warning("Plugin %s could not be loaded on this GPU architecture (found %d, requires %d)", name.c_str(),
                     adapterInfo->architecture, plugin->requiredAdapterArchitecture);
                 return false;
             }
 
             if (plugin->requiredAdapterVendor == nvigi::VendorId::eNVDA && plugin->requiredAdapterDriverVersion > adapterInfo->driverVersion)
             {
-                donut::log::error("Plugin %s could not be loaded on this driver (found %d.%d, requires %d.%d)", name.c_str(),
+                donut::log::warning("Plugin %s could not be loaded on this driver (found %d.%d, requires %d.%d)", name.c_str(),
                     adapterInfo->driverVersion.major, adapterInfo->driverVersion.minor,
                     plugin->requiredAdapterDriverVersion.major, plugin->requiredAdapterDriverVersion.minor);
                 return false;
@@ -131,7 +154,7 @@ bool NVIGIContext::CheckPluginCompat(nvigi::PluginID id, const std::string& name
     }
 
     // Not found
-    donut::log::error("Plugin %s could not be loaded", name.c_str());
+    donut::log::warning("Plugin %s could not be loaded", name.c_str());
 
     return false;
 }
@@ -167,9 +190,10 @@ bool NVIGIContext::AddGPTPlugin(nvigi::PluginID id, const std::string& name, con
             info->m_caption = name + " : " + models->supportedModelNames[i];
             info->m_guid = models->supportedModelGUIDs[i];
             info->m_modelRoot = modelRoot;
+            info->m_vram = models->modelMemoryBudgetMB[i];
             info->m_modelStatus = (models->modelFlags[i] & nvigi::kModelFlagRequiresDownload) 
                 ? ModelStatus::AVAILABLE_MANUAL_DOWNLOAD : ModelStatus::AVAILABLE_LOCALLY;
-            m_gptPluginModels.push_back(info);
+            m_gpt.m_pluginModelsMap[info->m_guid].push_back(info);
         }
 
         m_nvigiUnloadInterface(id, igpt);
@@ -227,9 +251,11 @@ bool NVIGIContext::AddGPTCloudPlugin()
             info->m_caption = name + " : " + modelName;
             info->m_guid = guid;
             info->m_modelRoot = m_shippedModelsPath;
+            info->m_vram = 0;
             info->m_modelStatus = ModelStatus::AVAILABLE_CLOUD;
             info->m_url = cloudCaps->url;
-            m_gptPluginModels.push_back(info);
+            m_gpt.m_pluginModelsMap[info->m_guid].push_back(info);
+
         }
 
         m_nvigiUnloadInterface(id, igpt);
@@ -273,9 +299,10 @@ bool NVIGIContext::AddASRPlugin(nvigi::PluginID id, const std::string& name, con
             info->m_caption = name + " : " + models.supportedModelNames[i];
             info->m_guid = models.supportedModelGUIDs[i];
             info->m_modelRoot = modelRoot;
+            info->m_vram = models.modelMemoryBudgetMB[i];
             info->m_modelStatus = (models.modelFlags[i] & nvigi::kModelFlagRequiresDownload)
                 ? ModelStatus::AVAILABLE_MANUAL_DOWNLOAD : ModelStatus::AVAILABLE_LOCALLY;
-            m_asrPluginModels.push_back(info);
+            m_asr.m_pluginModelsMap[info->m_guid].push_back(info);
         }
 
         m_nvigiUnloadInterface(id, iasr);
@@ -376,61 +403,94 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
 
     if (m_adapter < 0)
     {
-        donut::log::error("No NVIDIA adapters found.  GPU plugins will not be available\n");
+        donut::log::warning("No NVIDIA adapters found.  GPU plugins will not be available\n");
         if (m_pluginInfo->numDetectedAdapters)
             m_adapter = 0;
     }
 
+    m_gpt.m_vramBudget = 8500;
+
     AddGPTPlugin(nvigi::plugin::gpt::ggml::cuda::kId, "ggml.cuda", m_shippedModelsPath);
-
     AddGPTCloudPlugin();
-
     AddGPTPlugin(nvigi::plugin::gpt::onnxgenai::dml::kId, "onnxgenai", m_shippedModelsPath);
 
-    if (AnyGPTModelsAvailable())
+    m_gpt.m_choices = {
+        nvigi::plugin::gpt::ggml::cuda::kId, // NVDA
+        nvigi::plugin::gpt::onnxgenai::dml::kId, // GPU
+        nvigi::plugin::gpt::cloud::rest::kId, // Cloud
+        nullPluginId // CPU
+    };
+
     {
-        m_gptIndex = 0;
-        for (auto& model : m_gptPluginModels)
+        // Select initial plugin m_gpt.m_info...  Or we set it to null?
+        m_gpt.m_info = nullptr;
+        for (auto& m : m_gpt.m_pluginModelsMap)
         {
-            // For now, a model can be the default ONLY if it is locally-available
-            if (model->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY)
+            for (auto& info : m.second)
+            {
+                ModelStatus status = info->m_modelStatus;
+                if (status == ModelStatus::AVAILABLE_LOCALLY)
+                {
+                    if ((m_gpt.m_choices.m_nvdaFeatureID == info->m_featureID) ||
+                        (m_gpt.m_info == nullptr && m_gpt.m_choices.m_gpuFeatureID == info->m_featureID))
+                        m_gpt.m_info = info;
+                }
+            }
+            if (m_gpt.m_info)
                 break;
-            m_gptIndex++;
         }
-        // If the available ones were downloadable
-        if (m_gptIndex >= m_gptPluginModels.size())
-            m_gptIndex = -1;
     }
 
-    if (m_gptIndex == -1)
-    {
-        donut::log::error("Warning: No local (non-cloud) supported GPT/LLM models available.  Please download a local-inference LLM model.\n");
-    }
+    m_asr.m_vramBudget = 3000;
 
     AddASRPlugin(nvigi::plugin::asr::ggml::cuda::kId, "ggml.cuda", m_shippedModelsPath);
     AddASRPlugin(nvigi::plugin::asr::ggml::cpu::kId, "ggml.cpu", m_shippedModelsPath);
 
-    if (AnyASRModelsAvailable())
+    m_asr.m_choices = {
+        nvigi::plugin::asr::ggml::cuda::kId, // NVDA
+        nullPluginId, // GPU
+        nullPluginId, // Cloud
+        nvigi::plugin::asr::ggml::cpu::kId // CPU
+    };
+
     {
-        m_asrIndex = 0;
-        for (auto& model : m_asrPluginModels)
+        // Select initial plugin m_asr.m_info...  Or we set it to null?
+        m_asr.m_info = nullptr;
+        for (auto& m : m_asr.m_pluginModelsMap)
         {
-            // For now, a model can be the default ONLY if it is locally-available
-            if (model->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY)
+            for (auto& info : m.second)
+            {
+                ModelStatus status = info->m_modelStatus;
+                if (status == ModelStatus::AVAILABLE_LOCALLY)
+                {
+                    if ((m_asr.m_choices.m_nvdaFeatureID == info->m_featureID) ||
+                        (m_asr.m_info == nullptr && m_asr.m_choices.m_gpuFeatureID == info->m_featureID))
+                        m_asr.m_info = info;
+                }
+            }
+            if (m_asr.m_info)
                 break;
-            m_asrIndex++;
         }
-        // If the available ones were downloadable
-        if (m_asrIndex >= m_asrPluginModels.size())
-            m_asrIndex = -1;
+        if (!m_asr.m_info)
+        {
+            for (auto& m : m_asr.m_pluginModelsMap)
+            {
+                for (auto& info : m.second)
+                {
+                    ModelStatus status = info->m_modelStatus;
+                    if (status == ModelStatus::AVAILABLE_LOCALLY)
+                    {
+                        if (m_asr.m_choices.m_cpuFeatureID == info->m_featureID)
+                            m_asr.m_info = info;
+                    }
+                }
+                if (m_asr.m_info)
+                    break;
+            }
+        }
     }
 
-    if (m_asrIndex == -1)
-    {
-        donut::log::error("Warning: No local (non-cloud) supported ASR models available.  Please download a local-inference ASR model\n");
-    }
-
-    m_gptCallbackState.store(nvigi::kInferenceExecutionStateInvalid);
+    m_gpt.m_callbackState.store(nvigi::kInferenceExecutionStateInvalid);
 
     messages.push_back({ Message::Type::Answer, "I'm here to chat - type a query or record audio to interact!" });
 
@@ -495,63 +555,67 @@ bool NVIGIContext::Initialize_postDevice()
         // the HWI.cuda plugin, so we need to keep it alive between tests by 
         // getting it here.
         nvigiGetInterfaceDynamic(nvigi::plugin::hwi::cuda::kId, &m_cig, m_nvigiLoadInterface);
-
-        if (m_D3D12Queue != nullptr)
-        {
-            m_d3d12Params = new nvigi::D3D12Parameters;
-            m_d3d12Params->device = m_Device->getNativeObject(nvrhi::ObjectTypes::D3D12_Device);
-            m_d3d12Params->queue = m_D3D12Queue;
-        }
     }
     else
     {
         donut::log::info("Not using a shared CUDA context - CiG disabled");
     }
 
+    {
+        m_d3d12Params = new nvigi::D3D12Parameters;
+        m_d3d12Params->device = m_Device->getNativeObject(nvrhi::ObjectTypes::D3D12_Device);
+
+        if (m_D3D12Queue != nullptr)
+            m_d3d12Params->queue = m_D3D12Queue;
+    }
+
+    size_t currentVRAM;
+    GetVRAMStats(currentVRAM, m_maxVRAM);
+    m_maxVRAM /= (1024*1024);
 
     //! Load A2T script    
     auto loadASR = [this]()->HRESULT
         {
-            PluginModelInfo* gptInfo = GetGPTPluginModel(m_gptIndex);
+            PluginModelInfo* gptInfo = m_gpt.m_info;
 
             if (gptInfo)
             {
                 nvigi::GPTCreationParameters* params1 = GetGPTCreationParams(false);
                 nvigi::Result nvigiRes = nvigiGetInterfaceDynamic(gptInfo->m_featureID, &m_igpt, m_nvigiLoadInterface);
                 if (nvigiRes == nvigi::kResultOk)
-                    nvigiRes = m_igpt->createInstance(*params1, &m_gpt);
+                    nvigiRes = m_igpt->createInstance(*params1, &m_gpt.m_inst);
                 if (nvigiRes != nvigi::kResultOk)
                 {
                     donut::log::error("Unable to create GPT instance/model.  See log for details.  Most common issue is incorrect path to models");
                 }
 
-                m_gptReady.store(nvigiRes == nvigi::kResultOk);
+                m_gpt.m_ready.store(nvigiRes == nvigi::kResultOk);
                 FreeCreationParams(params1);
             }
             else
             {
-                m_gptReady.store(false);
+                m_gpt.m_ready.store(false);
             }
 
-            PluginModelInfo* asrInfo = GetASRPluginModel(m_asrIndex);
+            PluginModelInfo* asrInfo = m_asr.m_info;
 
             if (asrInfo)
             {
                 nvigi::ASRWhisperCreationParameters* params2 = GetASRCreationParams(false);
                 nvigi::Result nvigiRes = nvigiGetInterfaceDynamic(asrInfo->m_featureID, &m_iasr, m_nvigiLoadInterface);
                 if (nvigiRes == nvigi::kResultOk)
-                    nvigiRes = m_iasr->createInstance(*params2, &m_asr);
+                    nvigiRes = m_iasr->createInstance(*params2, &m_asr.m_inst);
                 if (nvigiRes != nvigi::kResultOk)
                 {
                     donut::log::error("Unable to create ASR instance/model.  See log for details.  Most common issue is incorrect path to models");
                 }
 
-                m_asrReady.store(nvigiRes == nvigi::kResultOk);
+                m_asr.m_ready.store(nvigiRes == nvigi::kResultOk);
                 FreeCreationParams(params2);
             }
             else
             {
-                m_asrReady.store(false);
+                m_asr.m_ready.store(false);
             }
 
             return S_OK;
@@ -598,13 +662,29 @@ template <typename T> void NVIGIContext::FreeCreationParams(T* params)
     }
 }
 
+nvigi::D3D12Parameters* NVIGIContext::ChainD3DInfo(PluginModelInfo* info)
+{
+    if (info == nullptr)
+        return nullptr;
+
+    nvigi::D3D12Parameters* d3d12Params = nullptr;
+    if (m_useCiG)
+    {
+        d3d12Params = new nvigi::D3D12Parameters;
+        d3d12Params->device = m_d3d12Params->device;
+        d3d12Params->queue = m_d3d12Params->queue;
+    }
+
+    return d3d12Params;
+}
+
 nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericInit, const std::string* modelRoot)
 {
     PluginModelInfo* info = nullptr;
     
     if (!genericInit)
     {
-        info = GetGPTPluginModel(m_gptIndex);
+        info = m_gpt.m_info;
         if (!info)
             return nullptr;
     }
@@ -612,7 +692,7 @@ nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericIni
     nvigi::CommonCreationParameters* common1 = new nvigi::CommonCreationParameters;
 
     common1->numThreads = 1;
-    common1->vramBudgetMB = 1024 * 8;
+    common1->vramBudgetMB = m_gpt.m_vramBudget;
     // Priority order of model roots:
     // if we've been passed a model root, use it
     // else if there's a model with info, use its root
@@ -623,15 +703,14 @@ nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericIni
 
     nvigi::GPTCreationParameters* params1 = new nvigi::GPTCreationParameters;
 
-    if (m_d3d12Params)
+    if (nvigi::D3D12Parameters* d3d12Params = ChainD3DInfo(m_gpt.m_info))
     {
-        nvigi::D3D12Parameters* d3d12Params = new nvigi::D3D12Parameters;
-        d3d12Params->device = m_d3d12Params->device;
-        d3d12Params->queue = m_d3d12Params->queue;
-        params1->chain(*d3d12Params);
+        if (NVIGI_FAILED(res, params1->chain(*d3d12Params)))
+            donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     }
 
-    params1->chain(*common1);
+    if (NVIGI_FAILED(res, params1->chain(*common1)))
+        donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     params1->seed = -1;
     params1->maxNumTokensToPredict = 200;
     params1->contextSize = 4096;
@@ -645,32 +724,19 @@ nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericIni
         nvigi::GPTOnnxgenaiCreationParameters& onnxgenaiParams = *onnxgenaiParamsPtr;
         onnxgenaiParams.backgroundMode = false;
         onnxgenaiParams.allowAsync = false;
-        params1->chain(onnxgenaiParams);
+        if (NVIGI_FAILED(res, params1->chain(onnxgenaiParams)))
+            donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     }
     else if (info->m_featureID == nvigi::plugin::gpt::cloud::rest::kId)
     {
-        const char* key = nullptr;
-        if (info->m_url.find("integrate.api.nvidia.com") != std::string::npos)
+        const char* key =  nullptr;
+        std::string apiKeyName = "";
+        if (!GetCloudModelAPIKey(*info, key, apiKeyName))
         {
-            key = getenv("NVIDIA_INTEGRATE_KEY");
-            if (key == NULL) {
-                donut::log::error("NVIDIA Integrate API key not found at NVIDIA_INTEGRATE_KEY; cloud model will not be available");
-                FreeCreationParams(params1);
-                return nullptr;
-            }
-        }
-        else if (info->m_url.find("openai.com") != std::string::npos)
-        {
-            key = getenv("OPENAI_KEY");
-            if (key == NULL) {
-                donut::log::error("OpenAI API key not found at OPENAI_KEY; cloud model will not be available");
-                FreeCreationParams(params1);
-                return nullptr;
-            }
-        }
-        else
-        {
-            donut::log::error("Unknown cloud model URL (%s); cannot send authentication token", info->m_url.c_str());
+            std::string text = "CLOUD API key not found at " + apiKeyName + " cloud model will not be available";
+            donut::log::warning(text.c_str());
+            FreeCreationParams(params1);
+            return nullptr;
         }
 
         //! Cloud parameters
@@ -678,7 +744,8 @@ nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericIni
         nvcfParams->url = info->m_url.c_str();
         nvcfParams->authenticationToken = key;
         nvcfParams->verboseMode = true;
-        params1->chain(*nvcfParams);
+        if (NVIGI_FAILED(res, params1->chain(*nvcfParams)))
+            donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     }
 
     return params1;
@@ -690,14 +757,14 @@ nvigi::ASRWhisperCreationParameters* NVIGIContext::GetASRCreationParams(bool gen
 
     if (!genericInit)
     {
-        info = GetASRPluginModel(m_asrIndex);
+        info = m_asr.m_info;
         if (!info)
             return nullptr;
     }
 
     nvigi::CommonCreationParameters* common1 = new nvigi::CommonCreationParameters;
     common1->numThreads = 4;
-    common1->vramBudgetMB = 1024 * 3;
+    common1->vramBudgetMB = m_asr.m_vramBudget;
     // Priority order of model roots:
     // if we've been passed a model root, use it
     // else if there's a model with info, use its root
@@ -707,15 +774,14 @@ nvigi::ASRWhisperCreationParameters* NVIGIContext::GetASRCreationParams(bool gen
 
     nvigi::ASRWhisperCreationParameters* params1 = new nvigi::ASRWhisperCreationParameters;
 
-    if (m_d3d12Params)
+    if (nvigi::D3D12Parameters* d3d12Params = ChainD3DInfo(m_asr.m_info))
     {
-        nvigi::D3D12Parameters* d3d12Params = new nvigi::D3D12Parameters;
-        d3d12Params->device = m_d3d12Params->device;
-        d3d12Params->queue = m_d3d12Params->queue;
-        params1->chain(*d3d12Params);
+        if (NVIGI_FAILED(res, params1->chain(*d3d12Params)))
+            donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     }
 
-    params1->chain(*common1);
+    if (NVIGI_FAILED(res, params1->chain(*common1)))
+        donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
 
     if (genericInit)
         return params1;
@@ -725,7 +791,7 @@ nvigi::ASRWhisperCreationParameters* NVIGIContext::GetASRCreationParams(bool gen
     return params1;
 }
 
-void NVIGIContext::ReloadGPTModel(int32_t index)
+void NVIGIContext::ReloadGPTModel(PluginModelInfo* newGptInfo)
 {
     if (m_loadingThread)
     {
@@ -736,29 +802,27 @@ void NVIGIContext::ReloadGPTModel(int32_t index)
 
     m_conversationInitialized = false;
 
-    int32_t prevIndex = m_gptIndex;
-    PluginModelInfo* prevGptInfo = GetGPTPluginModel(prevIndex);
+    PluginModelInfo* prevGptInfo = m_gpt.m_info;
 
-    m_gptIndex = index;
-    PluginModelInfo* newGptInfo = GetGPTPluginModel(m_gptIndex);
+    m_gpt.m_info = newGptInfo;
 
     nvigi::GPTCreationParameters* params1 = GetGPTCreationParams(false);
     // This will be null if there is an error OR if the new model is being downloaded
     if (!params1)
     {
-        m_gptIndex = prevIndex;
+        m_gpt.m_info = prevGptInfo;
         return;
     }
 
-    m_gptReady.store(false);
+    m_gpt.m_ready.store(false);
 
     if (m_igpt)
     {
-        m_igpt->destroyInstance(m_gpt);
-        m_gpt = {};
+        m_igpt->destroyInstance(m_gpt.m_inst);
+        m_gpt.m_inst = {};
     }
 
-    auto loadModel = [this, prevIndex, prevGptInfo, newGptInfo, params1]()->void
+    auto loadModel = [this, prevGptInfo, newGptInfo, params1]()->void
         {
             nvigi::GPTCreationParameters* params = params1;
             if (params)
@@ -766,18 +830,18 @@ void NVIGIContext::ReloadGPTModel(int32_t index)
                 cerr_redirect ggmlLog;
                 nvigi::Result nvigiRes = nvigiGetInterfaceDynamic(newGptInfo->m_featureID, &m_igpt, m_nvigiLoadInterface);
                 if (nvigiRes == nvigi::kResultOk)
-                    nvigiRes = m_igpt->createInstance(*params, &m_gpt);
+                    nvigiRes = m_igpt->createInstance(*params, &m_gpt.m_inst);
                 if (nvigiRes != nvigi::kResultOk)
                 {
                     FreeCreationParams(params);
                     donut::log::error("Unable to create GPT instance/model.  See log for details.  Most common issue is incorrect path to models.  Reverting to previous GPT instance/model");
-                    m_gptIndex = prevIndex;
+                    m_gpt.m_info = prevGptInfo;
                     params = GetGPTCreationParams(false);
                     if (params && prevGptInfo)
                     {
                         nvigiRes = nvigiGetInterfaceDynamic(prevGptInfo->m_featureID, &m_igpt, m_nvigiLoadInterface);
                         if (nvigiRes == nvigi::kResultOk)
-                            nvigiRes = m_igpt->createInstance(*params, &m_gpt);
+                            nvigiRes = m_igpt->createInstance(*params, &m_gpt.m_inst);
                     }
                     else
                     {
@@ -790,18 +854,18 @@ void NVIGIContext::ReloadGPTModel(int32_t index)
                     }
                 }
 
-                m_gptReady.store(nvigiRes == nvigi::kResultOk);
+                m_gpt.m_ready.store(nvigiRes == nvigi::kResultOk);
                 FreeCreationParams(params);
             }
             else
             {
-                m_gptReady.store(false);
+                m_gpt.m_ready.store(false);
             }
         };
     m_loadingThread = new std::thread{ loadModel };
 }
 
-void NVIGIContext::ReloadASRModel(int32_t index)
+void NVIGIContext::ReloadASRModel(PluginModelInfo* newAsrInfo)
 {
     if (m_loadingThread)
     {
@@ -809,15 +873,14 @@ void NVIGIContext::ReloadASRModel(int32_t index)
         delete m_loadingThread;
         m_loadingThread = nullptr;
     }
-    m_asrReady.store(false);
+    m_asr.m_ready.store(false);
 
-    m_asrIndex = index;
-    PluginModelInfo* newAsrInfo = GetASRPluginModel(m_asrIndex);
+    m_asr.m_info = newAsrInfo;
 
     if (m_iasr)
     {
-        m_iasr->destroyInstance(m_asr);
-        m_asr = {};
+        m_iasr->destroyInstance(m_asr.m_inst);
+        m_asr.m_inst = {};
     }
 
     auto loadModel = [this, newAsrInfo]()->void
@@ -829,18 +892,18 @@ void NVIGIContext::ReloadASRModel(int32_t index)
             {
                 nvigi::Result nvigiRes = nvigiGetInterfaceDynamic(newAsrInfo->m_featureID, &m_iasr, m_nvigiLoadInterface);
                 if (nvigiRes == nvigi::kResultOk)
-                    nvigiRes = m_iasr->createInstance(*params2, &m_asr);
+                    nvigiRes = m_iasr->createInstance(*params2, &m_asr.m_inst);
                 if (nvigiRes != nvigi::kResultOk)
                 {
                     donut::log::error("Unable to create ASR instance/model.  See log for details.  Most common issue is incorrect path to models");
                 }
 
-                m_asrReady.store(nvigiRes == nvigi::kResultOk);
+                m_asr.m_ready.store(nvigiRes == nvigi::kResultOk);
                 FreeCreationParams(params2);
             }
             else
             {
-                m_asrReady.store(false);
+                m_asr.m_ready.store(false);
             }
         };
     m_loadingThread = new std::thread{ loadModel };
@@ -848,7 +911,7 @@ void NVIGIContext::ReloadASRModel(int32_t index)
 
 void NVIGIContext::LaunchASR()
 {
-    if (!m_asrReady)
+    if (!m_asr.m_ready)
     {
         donut::log::warning("Skipping Speech to Text as it is still loading or failed to load");
         return;
@@ -886,17 +949,17 @@ void NVIGIContext::LaunchASR()
             nvigi::InferenceDataAudio wavData(audioData);
             AudioRecordingHelper::StopRecordingAudio(m_audioInfo, &wavData);
 
-            std::vector<nvigi::InferenceDataSlot> inSlots = { {nvigi::kASRWhisperDataSlotAudio, &wavData} };
+            std::vector<nvigi::InferenceDataSlot> inSlots = { {nvigi::kASRWhisperDataSlotAudio, wavData} };
 
             nvigi::InferenceExecutionContext ctx{};
-            ctx.instance = m_asr;
+            ctx.instance = m_asr.m_inst;
             ctx.callback = asrCallback;
             ctx.callbackUserData = this;
             nvigi::InferenceDataSlotArray inputs = { inSlots.size(), inSlots.data() };
             ctx.inputs = &inputs;
-            m_asrRunning.store(true);
-            m_asr->evaluate(&ctx);
-            m_asrRunning.store(false);
+            m_asr.m_running.store(true);
+            m_asr.m_inst->evaluate(&ctx);
+            m_asr.m_running.store(false);
 
             m_inferThreadRunning = false;
         };
@@ -942,9 +1005,9 @@ void NVIGIContext::LaunchGPT(std::string prompt)
 
             // Signal the calling thread, since we may be an async evalutation
             {
-                std::unique_lock lck(nvigi.m_gptCallbackMutex);
-                nvigi.m_gptCallbackState = state;
-                nvigi.m_gptCallbackCV.notify_one();
+                std::unique_lock lck(nvigi.m_gpt.m_callbackMutex);
+                nvigi.m_gpt.m_callbackState = state;
+                nvigi.m_gpt.m_callbackCV.notify_one();
             }
 
             return state;
@@ -962,12 +1025,11 @@ void NVIGIContext::LaunchGPT(std::string prompt)
 
             auto eval = [this, &gptCallback, &runtime](std::string prompt, bool initConversation)->void
                 {
-                    nvigi::CpuData text(prompt.length() + 1, (void*)prompt.c_str());
-                    nvigi::InferenceDataText data(text);
+                    nvigi::InferenceDataTextSTLHelper data(prompt);
 
                     nvigi::InferenceExecutionContext ctx{};
-                    ctx.instance = m_gpt;
-                    std::vector<nvigi::InferenceDataSlot> inSlots = { { initConversation ? nvigi::kGPTDataSlotSystem : nvigi::kGPTDataSlotUser, &data} };
+                    ctx.instance = m_gpt.m_inst;
+                    std::vector<nvigi::InferenceDataSlot> inSlots = { { initConversation ? nvigi::kGPTDataSlotSystem : nvigi::kGPTDataSlotUser, data} };
                     ctx.callback = gptCallback;
                     ctx.callbackUserData = this;
                     nvigi::InferenceDataSlotArray inputs = { inSlots.size(), inSlots.data() };
@@ -975,16 +1037,16 @@ void NVIGIContext::LaunchGPT(std::string prompt)
                     ctx.runtimeParameters = runtime;
 
                     // By default, before any callback, we always have "data pending"
-                    m_gptCallbackState = nvigi::kInferenceExecutionStateDataPending;
+                    m_gpt.m_callbackState = nvigi::kInferenceExecutionStateDataPending;
 
-                    m_gptRunning.store(true);
-                    nvigi::Result res = m_gpt->evaluate(&ctx);
+                    m_gpt.m_running.store(true);
+                    nvigi::Result res = m_gpt.m_inst->evaluate(&ctx);
 
                     // Wait for the GPT to stop returning eDataPending in the callback
                     if (res == nvigi::kResultOk)
                     {
-                        std::unique_lock lck(m_gptCallbackMutex);
-                        m_gptCallbackCV.wait(lck, [&this]() { return m_gptCallbackState != nvigi::kInferenceExecutionStateDataPending; });
+                        std::unique_lock lck(m_gpt.m_callbackMutex);
+                        m_gpt.m_callbackCV.wait(lck, [&, this]() { return m_gpt.m_callbackState != nvigi::kInferenceExecutionStateDataPending; });
                     }
                 };
 
@@ -997,7 +1059,7 @@ void NVIGIContext::LaunchGPT(std::string prompt)
 
             eval(prompt, false);
 
-            m_gptRunning.store(false);
+            m_gpt.m_running.store(false);
 
             m_inferThreadRunning = false;
         };
@@ -1014,135 +1076,321 @@ void NVIGIContext::FlushInferenceThread()
     }
 }
 
-bool NVIGIContext::ModelsComboBox(const std::string& label, const std::vector<std::string>& values, const std::vector<ModelStatus>* available, int32_t& value, bool disabled)
+bool NVIGIContext::ModelsComboBox(const std::string& label, bool automatic, StageInfo& stage, PluginModelInfo*& value)
 {
-    int index = value;
-
+    const std::map<std::string, std::vector<NVIGIContext::PluginModelInfo*>>& models = stage.m_pluginModelsMap;
+    NVIGIContext::PluginModelInfo* info = value;
     bool changed = false;
-    if (!disabled)
+    if (automatic)
     {
-        if (ImGui::BeginCombo(label.c_str(), (index < 0) ? "No Selection" : values[index].c_str()))
+        int newVram = (int)stage.m_vramBudget;
+
+
+        const std::string uniqueLabel = "VRAM MB ##" + label;
+        if (ImGui::InputInt(uniqueLabel.c_str(), &newVram, 100, 500, ImGuiInputTextFlags_EnterReturnsTrue))
         {
-            for (auto i = 0; i < values.size(); ++i)
+            if (newVram < 0)
+                newVram = 0;
+            if (m_maxVRAM && newVram > m_maxVRAM)
+                newVram = m_maxVRAM;
+            stage.m_vramBudget = newVram;
+        }
+
+        PluginModelInfo* newInfo = nullptr;
+        if (ImGui::BeginCombo(label.c_str(), (value == nullptr) ? "No Selection" : value->m_modelName.c_str()))
+        {
+            for (auto m : stage.m_pluginModelsMap)
             {
-                bool is_selected = i == index;
-                if (!available || (*available)[i] == ModelStatus::AVAILABLE_LOCALLY
-                    || (*available)[i] == ModelStatus::AVAILABLE_CLOUD)
+                PluginModelInfo* newInfo = nullptr;
+                if (SelectAutoPlugin(stage, m.second, newInfo))
                 {
-                    if (ImGui::Selectable(values[i].c_str(), is_selected))
+                    bool is_selected_guid = info && newInfo && newInfo->m_guid == info->m_guid;
+                    if (ImGui::Selectable(newInfo->m_modelName.c_str(), is_selected_guid) || is_selected_guid)
                     {
-                        changed = index != i;
-                        index = i;
+                        info = newInfo;
                     }
                 }
-                else if ((*available)[i] == ModelStatus::AVAILABLE_MANUAL_DOWNLOAD)
+            }
+            ImGui::EndCombo();
+        }
+        else if (info)
+        {
+            // This will be hit when we move from manual to auto or adjust the vram values.
+            for (auto m : stage.m_pluginModelsMap)
+            {
+                PluginModelInfo* newInfo = nullptr;
+                if (SelectAutoPlugin(stage, m.second, newInfo))
                 {
-                    ImGui::TextDisabled((values[i] + ": MANUAL DOWNLOAD").c_str());
+                    if (newInfo && newInfo->m_guid == info->m_guid)
+                    {
+                        info = newInfo;
+                        break;
+                    }
                 }
-                if (is_selected) ImGui::SetItemDefaultFocus();
+            }
+        }
+
+        changed = value != info;
+    }
+    else
+    {
+        if (ImGui::BeginCombo(label.c_str(), (info == nullptr) ? "No Selection" : info->m_caption.c_str()))
+        {
+            for (auto m : models)
+            {
+                for (auto it : m.second)
+                {
+                    NVIGIContext::PluginModelInfo* newInfo = it;
+                    bool is_selected = newInfo == info;
+                    const char* key = nullptr;
+                    if (newInfo)
+                    {
+                        std::string apiKeyName = "";
+                        bool cloudNotAvailable = (newInfo->m_modelStatus == ModelStatus::AVAILABLE_CLOUD) && !GetCloudModelAPIKey(*newInfo, key, apiKeyName);
+                        if (cloudNotAvailable)
+                        {
+                            ImGui::TextDisabled((newInfo->m_pluginName + ": No " + apiKeyName + " API KEY " + newInfo->m_modelName).c_str());
+                        }
+                        else if (newInfo->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY || newInfo->m_modelStatus == ModelStatus::AVAILABLE_CLOUD)
+                        {
+                            if (ImGui::Selectable(newInfo->m_caption.c_str(), is_selected))
+                            {
+                                changed = !is_selected;
+                                info = newInfo;
+                            }
+                        }
+                        else if (newInfo->m_modelStatus == ModelStatus::AVAILABLE_MANUAL_DOWNLOAD)
+                        {
+                            ImGui::TextDisabled((newInfo->m_caption + ": MANUAL DOWNLOAD").c_str());
+                        }
+                        if (is_selected) ImGui::SetItemDefaultFocus();
+                    }
+                }
             }
             ImGui::EndCombo();
         }
     }
-    else
-    {
-        if (ImGui::BeginCombo(label.c_str(), (index != -1) ? values[index].c_str() : values[0].c_str()))
-            ImGui::EndCombo();
-    }
-    value = index;
+
+    value = info;
 
     return changed;
 }
 
-void NVIGIContext::BuildASRUI()
+bool NVIGIContext::SelectAutoPlugin(const StageInfo& stage, const std::vector<PluginModelInfo*>& options, PluginModelInfo*& model)
+{
+    auto findOption = [options](nvigi::PluginID needId)->PluginModelInfo* {
+            if (needId == 0)
+                return nullptr;
+            for (auto info : options)
+                if (info->m_featureID == needId)
+                    return info;
+
+            return nullptr;
+        };
+
+    // First, can we use the NV-specific plugin?
+    if (auto info = findOption(stage.m_choices.m_nvdaFeatureID))
+    {
+        // Only use if we have enough VRAM budgetted
+        if (stage.m_vramBudget >= info->m_vram)
+        {
+            model = info;
+            return true;
+        }
+    }
+
+    // Can we use a generic GPU plugin?
+    if (auto info = findOption(stage.m_choices.m_gpuFeatureID))
+    {
+        // Only use if we have enough VRAM budgetted
+        if (stage.m_vramBudget >= info->m_vram)
+        {
+            model = info;
+            return true;
+        }
+    }
+
+    // Is cloud an option?
+    if (auto info = findOption(stage.m_choices.m_cloudFeatureID))
+    {
+        const char* key = nullptr;
+        std::string apiKeyName = "";
+        if (GetCloudModelAPIKey(*info, key, apiKeyName))
+        {
+            model = info;
+            return true;
+        }
+    }
+
+    // What about CPU?
+    if (auto info = findOption(stage.m_choices.m_cpuFeatureID))
+    {
+        model = info;
+        return true;
+    }
+
+    // No viable options...
+    return false;
+}
+
+bool NVIGIContext::BuildModelsSelectUI()
+{
+    if (!m_gpt.m_running && !m_asr.m_running && !m_recording)
+    {
+        if (ImGui::CollapsingHeader("Model Settings..."))
+        {
+            ImGui::Checkbox("Automatic Backend Selection", &m_automaticBackendSelection);
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
+            ImGui::Text("Automatic Speech Recognition");
+            ImGui::PopStyleColor();
+
+            PluginModelInfo* newInfo = m_asr.m_info;
+            if (ModelsComboBox("##ASR", m_automaticBackendSelection, m_asr, newInfo))
+                ReloadASRModel(newInfo);
+
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
+            ImGui::Text("GPT");
+            ImGui::PopStyleColor();
+
+            newInfo = m_gpt.m_info;
+            if (ModelsComboBox("##GPT", m_automaticBackendSelection, m_gpt, newInfo))
+                ReloadGPTModel(newInfo);
+
+            return true;
+        }
+    }
+    return false;
+}
+
+void NVIGIContext::BuildModelsStatusUI()
 {
     ImGui::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
-    ImGui::Text("Automatic Speech Recognition");
-    ImGui::PopStyleColor();
 
-    std::vector<std::string> asrListCaptions;
-    std::vector<ModelStatus> asrListAvailable;
-    for (auto it : m_asrPluginModels)
+    if (m_asr.m_ready)
     {
-        asrListCaptions.push_back(it->m_caption);
-        asrListAvailable.push_back(it->m_modelStatus);
+        std::string asr = "ASR: " + m_asr.m_info->m_caption;
+        ImGui::Text(asr.c_str());
+    }
+    else
+    {
+        if (m_asr.m_info != nullptr)
+            ImGui::Text("ASR: Loading model please wait...");
+        else
+            ImGui::Text("ASR: No model selected ...");
     }
 
-    if (ModelsComboBox("Inference##ASR", asrListCaptions, &asrListAvailable, m_asrIndex, m_asrRunning))
+    if (m_gpt.m_ready)
     {
-        ReloadASRModel(m_asrIndex);
+        std::string gpt = "GPT: " + m_gpt.m_info->m_caption;
+        ImGui::Text(gpt.c_str());
     }
-
-    if (m_asrReady)
+    else
     {
-        if (m_recording)
+        if (m_gpt.m_info != nullptr)
+            ImGui::Text("GPT: Loading model please wait...");
+        else
+            ImGui::Text("GPT: No model selected ...");
+    }
+}
+
+void NVIGIContext::BuildChatUI()
+{
+    if (m_gpt.m_ready)
+    {
+        std::scoped_lock lock(m_mtx);
+
+        static char inputBuffer[512] = {};
+        auto child_size = ImVec2(ImGui::GetWindowContentRegionWidth(), 600);
+        if (ImGui::BeginChild("Chat UI", child_size, false))
         {
-            if (ImGui::Button("Stop"))
+            // Create a child window with a scrollbar for messages
+            if (ImGui::BeginChild("Messages", ImVec2(0, -2*ImGui::GetFrameHeightWithSpacing()), true))
             {
-                m_recording = false;
-                m_gptInputReady = false;
+                ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + child_size.x - 30);  // Wrapping text before the edge, added a small offset for aesthetics
 
-                FlushInferenceThread();
+                for (const auto& message : messages)
+                {
+                    if (message.type == Message::Type::Question)
+                        ImGui::TextColored(ImVec4(1, 1, 0, 1), "Q: %s", message.text.c_str());
+                    else
+                        ImGui::TextColored(ImVec4(0, 1, 0, 1), "A: %s", message.text.c_str());
+                }
 
-                LaunchASR();
+                ImGui::PopTextWrapPos();  // Reset wrapping position
+
+                // Scroll to the bottom when a new message is added
+                if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                    ImGui::SetScrollHereY(1.0f);
             }
-        } // Do not show Record button when ASR or GPT is running
-        else if (!m_gptRunning && !m_asrRunning && ImGui::Button("Record"))
-        {
-            FlushInferenceThread();
-            m_audioInfo = AudioRecordingHelper::StartRecordingAudio();
-            m_recording = true;
+            ImGui::EndChild();
 
-            m_a2t = "";
-            m_gptInput = "";
+            // Do not show Send when ASR or GPT is running, or when we're recording audio
+            if (!m_gpt.m_running && !m_asr.m_running)
+            {
+                ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth());
+                // Input text box and button to send messages
+                if (ImGui::InputText("##Input", inputBuffer, sizeof(inputBuffer), ImGuiInputTextFlags_EnterReturnsTrue))
+                {
+                    m_gptInput = inputBuffer;
+                    m_gptInputReady = true;
+                    inputBuffer[0] = '\0';  // Clear the buffer
+                }
+                ImGui::PopItemWidth();
+
+                if (m_asr.m_ready)
+                {
+                    if (m_recording)
+                    {
+                        if (ImGui::Button("Stop"))
+                        {
+                            m_recording = false;
+                            m_gptInputReady = false;
+
+                            FlushInferenceThread();
+
+                            LaunchASR();
+                        }
+                    } // Do not show Record button when ASR or GPT is running
+                    else if (!m_gpt.m_running && !m_asr.m_running && ImGui::Button("Record"))
+                    {
+                        FlushInferenceThread();
+                        m_audioInfo = AudioRecordingHelper::StartRecordingAudio();
+                        m_recording = true;
+
+                        m_a2t = "";
+                        m_gptInput = "";
+                    }
+                }
+
+                if (!m_recording)
+                {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Reset Chat"))
+                    {
+                        m_conversationInitialized = false;
+                        messages.clear();
+                        messages.push_back({ Message::Type::Answer, "Conversation Reset: I'm here to chat - type a query or record audio to interact!" });
+                    }
+                }
+            }
         }
 
-        // Create a child window with a scrollbar for messages
-        auto child_size = ImVec2(ImGui::GetWindowContentRegionWidth(), 60);
-        if (ImGui::BeginChild("Recognized Text", ImVec2(0, 60), true))
-        {
-            std::scoped_lock lock(m_mtx);
-            ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + child_size.x - 15);  // Wrapping text before the edge, added a small offset for aesthetics
-            ImGui::TextColored(ImVec4(1, 1, 0, 1), "%s", m_a2t.c_str());
-
-            ImGui::PopTextWrapPos();  // Reset wrapping position
-
-            // Scroll to the bottom when a new message is added
-            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
-                ImGui::SetScrollHereY(1.0f);
-        }
         ImGui::EndChild();
     }
     else
     {
-        if (m_asrIndex >= 0)
-            ImGui::Text("ASR Loading...");
+        if (m_gpt.m_info == nullptr || m_asr.m_info == nullptr)
+            ImGui::Text("Loading models please wait ...");
         else
-            ImGui::Text("No model selected ...");
+            ImGui::Text("No models selected ...");
     }
 }
 
-void NVIGIContext::BuildGPTUI()
+void NVIGIContext::BuildUI()
 {
-    ImGui::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
-    ImGui::Text("GPT");
-    ImGui::PopStyleColor();
-
-    std::vector<std::string> gptListCaptions;
-    std::vector<ModelStatus> gptListAvailable;
-    for (auto it : m_gptPluginModels)
-    {
-        gptListCaptions.push_back(it->m_caption);
-        gptListAvailable.push_back(it->m_modelStatus);
-    }
-    
-    int newIndex = m_gptIndex;
-    if (ModelsComboBox("Inference##GPT", gptListCaptions, &gptListAvailable, newIndex, m_gptRunning))
-        ReloadGPTModel(newIndex);
-
-    if (m_gptReady)
+    if (m_gpt.m_ready)
     {
         if (m_gptInputReady)
         {
@@ -1155,82 +1403,12 @@ void NVIGIContext::BuildGPTUI()
 
             LaunchGPT(m_gptInput);
         }
-
-        if (ImGui::Button("Reset Conversation"))
-        {
-            std::scoped_lock lock(m_mtx);
-            m_conversationInitialized = false;
-            messages.clear();
-            messages.push_back({ Message::Type::Answer, "Conversation Reset: I'm here to chat - type a query or record audio to interact!" });
-        }
-
-        {
-            std::scoped_lock lock(m_mtx);
-
-            static char inputBuffer[256] = {};
-            auto child_size = ImVec2(ImGui::GetWindowContentRegionWidth(), 600);
-            if (ImGui::BeginChild("Chat UI", child_size, false))
-            {
-                // Create a child window with a scrollbar for messages
-                if (ImGui::BeginChild("Messages", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), true))
-                {
-                    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + child_size.x - 15);  // Wrapping text before the edge, added a small offset for aesthetics
-
-                    for (const auto& message : messages)
-                    {
-                        if (message.type == Message::Type::Question)
-                            ImGui::TextColored(ImVec4(1, 1, 0, 1), "Q: %s", message.text.c_str());
-                        else
-                            ImGui::TextColored(ImVec4(0, 1, 0, 1), "A: %s", message.text.c_str());
-                    }
-
-                    ImGui::PopTextWrapPos();  // Reset wrapping position
-
-                    // Scroll to the bottom when a new message is added
-                    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
-                        ImGui::SetScrollHereY(1.0f);
-                }
-                ImGui::EndChild();
-
-                // Input text box and button to send messages
-                if (ImGui::InputText("##Input", inputBuffer, sizeof(inputBuffer), ImGuiInputTextFlags_EnterReturnsTrue)) 
-                {
-                    m_gptInput = inputBuffer;
-                    m_gptInputReady = true;
-                    inputBuffer[0] = '\0';  // Clear the buffer
-                }
-
-                // Do not show Send when ASR or GPT is running, or when we're recording audio
-                if (!m_gptRunning && !m_asrRunning && !m_recording)
-                {
-                    ImGui::SameLine();
-                    if (ImGui::Button("Send"))
-                    {
-                        m_gptInput = inputBuffer;
-                        m_gptInputReady = true;
-                        inputBuffer[0] = '\0';  // Clear the buffer
-                    }
-                }
-
-                ImGui::SameLine();
-            }
-        }
-
-        ImGui::EndChild();
     }
-    else
-    {
-        if (m_gptIndex >= 0)
-            ImGui::Text("Loading models please wait ...");
-        else
-            ImGui::Text("No model selected ...");
-    }
-}
 
-void NVIGIContext::BuildUI()
-{
-    BuildASRUI();
-    BuildGPTUI();
+    if (!m_modelSettingsOpen)
+        BuildChatUI();
+    BuildModelsStatusUI();
+    m_modelSettingsOpen = BuildModelsSelectUI();
 }
 
 void NVIGIContext::GetVRAMStats(size_t& current, size_t& budget)

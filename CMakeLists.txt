@@ -77,11 +77,15 @@ file(GLOB NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.core.framework.dll")
 file(GLOB NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.core.framework.dll")
 list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.plugin.hwi.cuda.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.plugin.hwi.cuda.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.plugin.hwi.common.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.plugin.hwi.common.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}cig_scheduler_settings.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}cig_scheduler_settings.dll")
 
-list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cpu.dll" )
-list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cpu.dll" )
-list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.cpu.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.onnxgenai.dml.dll")
-list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.cpu.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.onnxgenai.dml.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cpu.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.onnxgenai.dml.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cpu.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.onnxgenai.dml.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.cpu.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.cpu.dll" )
 
 list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.cloud.rest.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.cloud.rest.dll")
@@ -101,8 +105,6 @@ if (NOT NVIGI_BUILD_ONLY)
     list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}zlib1.dll")
 	list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}libssl-3-x64.dll")
 	list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}libcrypto-3-x64.dll")
-
-    list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}ggml_a1fe56b_cpu.dll" "${NVIGI_3RDPARTY_DLL_DIR}ggml_a1fe56b_cuda.dll" "${NVIGI_3RDPARTY_DLL_DIR}llama_a1fe56b_cpu.dll" "${NVIGI_3RDPARTY_DLL_DIR}llama_a1fe56b_cuda.dll")
 endif()
 
 # We copy all the Jsons that may be present. 
