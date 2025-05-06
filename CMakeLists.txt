@@ -91,6 +91,16 @@ list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.cloud.rest.dll"
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.cloud.rest.dll")
 list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.net.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.net.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.tts.asqflow.trt.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.tts.asqflow.trt.dll")
+
+# Glob all .bin files from the specified directory
+file(GLOB NVIGI_BIN_FILES "${NVIGI_PLUGINS_ROOT}/data/nvigi.test/nvigi.tts/ASqFlow/mel_spectrograms_targets/*.bin")
+
+list (APPEND NVIGI_DLLS ${NVIGI_BIN_FILES})
+list (APPEND NVIGI_PRODUCTION_DLLS ${NVIGI_BIN_FILES})
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGINS_ROOT}/data/nvigi.test/nvigi.tts/ASqFlow/mel_spectrograms_targets/transcripts.json")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGINS_ROOT}/data/nvigi.test/nvigi.tts/ASqFlow/mel_spectrograms_targets/transcripts.json")
 
 # Assume if one is there, they all are...
 if (NOT NVIGI_BUILD_ONLY)
@@ -105,6 +115,9 @@ if (NOT NVIGI_BUILD_ONLY)
     list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}zlib1.dll")
 	list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}libssl-3-x64.dll")
 	list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}libcrypto-3-x64.dll")
+
+    list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}nvinfer_10.dll")
+    list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}RivaNormalizer.dll")
 endif()
 
 # We copy all the Jsons that may be present. 

@@ -15,9 +15,16 @@
 #include <mutex>
 #include <string>
 #include <sstream>
+#include <queue>
+#include <memory>
+#include <thread>
+#include <type_traits>
+#include <nvigi.h>
 #include <nvigi_struct.h>
 #include <nvigi_types.h>
 #include <nvigi_cuda.h>
+#include <nvigi_stl_helpers.h>
+#include <nvigi_tts.h>
 
 #include <dxgi.h>
 #include <dxgi1_5.h>
@@ -39,12 +46,14 @@ namespace nvigi {
     struct CommonCreationParameters;
     struct GPTCreationParameters;
     struct ASRWhisperCreationParameters;
+    struct TTSCreationParameters;
 
     struct D3D12Parameters;
     struct IHWICuda;
     struct InferenceInterface;
     using IGeneralPurposeTransformer = InferenceInterface;
     using IAutoSpeechRecognition = InferenceInterface;
+    using ITextToSpeech = InferenceInterface;
 
     using InferenceExecutionState = uint32_t;
     struct InferenceInstance;
@@ -114,11 +123,14 @@ struct NVIGIContext
     bool AddGPTPlugin(nvigi::PluginID id, const std::string& name, const std::string& modelRoot);
     bool AddGPTCloudPlugin();
     bool AddASRPlugin(nvigi::PluginID id, const std::string& name, const std::string& modelRoot);
+    bool AddTTSPlugin(nvigi::PluginID id, const std::string& name, const std::string& modelRoot);
 
     void GetVRAMStats(size_t& current, size_t& budget);
 
     void LaunchASR();
     void LaunchGPT(std::string prompt);
+    void AppendTTSText(std::string text, bool done);
+    void LaunchTTS(std::string prompt);
 
     bool ModelsComboBox(const std::string& label, bool automatic,
         StageInfo& stage,
@@ -135,13 +147,16 @@ struct NVIGIContext
 
     virtual nvigi::GPTCreationParameters* GetGPTCreationParams(bool genericInit, const std::string* modelRoot = nullptr);
     virtual nvigi::ASRWhisperCreationParameters* GetASRCreationParams(bool genericInit, const std::string* modelRoot = nullptr);
+    virtual nvigi::TTSCreationParameters* GetTTSCreationParams(bool genericInit, const std::string* modelRoot = nullptr);
 
     void ReloadGPTModel(PluginModelInfo* newInfo);
     void ReloadASRModel(PluginModelInfo* newInfo);
+    void ReloadTTSModel(PluginModelInfo* newInfo);
     void FlushInferenceThread();
 
     StageInfo m_asr;
     StageInfo m_gpt;
+    StageInfo m_tts;
 
     std::string m_nvdaKey = "";
     std::string m_openAIKey = "";
@@ -193,12 +208,50 @@ struct NVIGIContext
         return false;
     }
 
+    struct TTSInferenceContext {
+        std::string m_selectedTargetVoice = "02_F-Emma_Maidenberg_15s";
+        nvigi::InferenceDataTextSTLHelper dataTextTTS = "";
+        nvigi::InferenceDataTextSTLHelper dataTextTargetPathSepctrogram = "";
+        std::vector<nvigi::InferenceDataSlot> inSlotsTTS;
+        nvigi::InferenceDataSlotArray inputsTTS;
+        nvigi::TTSASqFlowRuntimeParameters runtimeTTS{};
+        std::queue< std::unique_ptr<std::thread>> playAudioThreads;
+        std::mutex mtxPlayAudio;
+        std::mutex ttsCallbackMutex;
+
+        nvigi::InferenceExecutionContext m_ttsCtx{};
+
+        size_t posLastSpace = 0; // used to handle TTS input chunks
+        size_t posLastPeriod = 0; // used to handle TTS input chunks
+        size_t posLastComma = 0; // used to handle TTS input chunks
+
+        ~TTSInferenceContext() {
+            while (true) {
+                std::unique_ptr<std::thread> thread;
+                {
+                    if (playAudioThreads.empty())
+                        break;
+                    thread = std::move(playAudioThreads.front());
+                    playAudioThreads.pop();
+                }
+
+                if (thread->joinable()) {
+                    thread->join();
+                }
+            }
+        }
+    };
+
     nvrhi::IDevice* m_Device = nullptr;
     nvrhi::RefCountPtr<ID3D12CommandQueue> m_D3D12Queue = nullptr;
     std::string m_appUtf8path = "";
     std::string m_shippedModelsPath = "../../nvigi.models";
     std::string m_modelASR;
     std::string m_LogFilename = "";
+    std::string m_systemPromptGPT = "You are a helpful AI agent. Your goal is to provide information about queries.\
+        Generate only medium size answers and avoid describing what you are doing physically.\
+        Avoid using specific words that are not part of the dictionary.\n"; 
+	TTSInferenceContext m_ttsInferenceCtx;
     bool m_useCiG = true;
 
     int m_adapter = -1;
@@ -206,7 +259,9 @@ struct NVIGIContext
 
     nvigi::IGeneralPurposeTransformer* m_igpt{};
     nvigi::IAutoSpeechRecognition* m_iasr{};
+    nvigi::ITextToSpeech* m_itts{};
     nvigi::IHWICuda* m_cig{};
+    std::string m_ttsInput;
 
     std::string grpcMetadata{};
     std::string nvcfToken{};
@@ -218,6 +273,7 @@ struct NVIGIContext
     std::mutex m_mtx;
     std::vector<uint8_t> m_wavRecording;
     bool m_conversationInitialized = false;
+    std::atomic<bool> m_ttsInputReady = false;
 
     bool m_modelSettingsOpen = false;
     bool m_automaticBackendSelection = false;
@@ -226,6 +282,7 @@ struct NVIGIContext
     std::atomic<bool> m_inferThreadRunning = false;
     std::thread* m_loadingThread{};
 
+    std::vector<int16_t> m_ttsOutputAudio;
     AudioRecordingHelper::RecordingInfo* m_audioInfo{};
 
     nvigi::D3D12Parameters* ChainD3DInfo(PluginModelInfo* info);
