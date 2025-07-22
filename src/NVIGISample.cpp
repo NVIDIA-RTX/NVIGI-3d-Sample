@@ -77,7 +77,7 @@ NVIGISample::NVIGISample(DeviceManager* deviceManager, UIData& ui, const std::st
     else
         SetCurrentSceneName("/native/" + sceneName);
 
-    deviceManager->m_callbacks.beforePresent = NVIGIContext::PresentStart;
+    deviceManager->m_callbacks.afterPresent = NVIGIContext::PresentEnd;
 };
 
 // Functions of interest

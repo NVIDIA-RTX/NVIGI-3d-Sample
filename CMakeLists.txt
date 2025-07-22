@@ -46,9 +46,10 @@ set(CMAKE_CONFIGURATION_TYPES "Debug;Release;Production")
 set(CMAKE_EXE_LINKER_FLAGS_PRODUCTION ${CMAKE_EXE_LINKER_FLAGS_RELEASE})
 set(CMAKE_CXX_FLAGS_PRODUCTION ${CMAKE_CXX_FLAGS_RELEASE})
 set(CMAKE_C_FLAGS_PRODUCTION ${CMAKE_C_FLAGS_RELEASE})
+set(ENV{VULKAN_SDK} ${VULKAN_SDK})
 
 # Add libraries
-option(DONUT_WITH_VULKAN "Force VK off in donut for the NVIGI sample" OFF)
+# option(DONUT_WITH_VULKAN "Force VK off in donut for the NVIGI sample" OFF)
 add_subdirectory(donut)
 
 
@@ -75,6 +76,9 @@ find_file(NVIGI_CORE_DLL nvigi.core.framework.dll HINTS "${NVIGI_CORE_ROOT}/bin/
 
 file(GLOB NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.core.framework.dll")
 file(GLOB NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.core.framework.dll")
+file(GLOB NVIGI_AGILITY_DLLS "${NVIGI_PLUGIN_DLL_DIR}/D3D12/D3D12Core.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.plugin.hwi.d3d12.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.plugin.hwi.d3d12.dll")
 list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.plugin.hwi.cuda.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.plugin.hwi.cuda.dll")
 list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}nvigi.plugin.hwi.common.dll")
@@ -82,17 +86,26 @@ list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}nvigi.plugin
 list (APPEND NVIGI_DLLS "${NVIGI_CORE_DLL_DIR}cig_scheduler_settings.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_CORE_PRODUCTION_DLL_DIR}cig_scheduler_settings.dll")
 
-list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cpu.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.onnxgenai.dml.dll")
-list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cpu.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.onnxgenai.dml.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.cpu.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.cpu.dll")
 list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.cpu.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.cuda.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.cpu.dll" )
+
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.d3d12.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.ggml.vk.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.d3d12.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.ggml.vk.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.d3d12.dll" "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.asr.ggml.vk.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.d3d12.dll" "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.asr.ggml.vk.dll" )
 
 list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.gpt.cloud.rest.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.gpt.cloud.rest.dll")
 list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.net.dll")
 list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.net.dll")
-list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.tts.asqflow.trt.dll")
-list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.tts.asqflow.trt.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.tts.asqflow-trt.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.tts.asqflow-trt.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.tts.asqflow-ggml.cuda.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.tts.asqflow-ggml.cuda.dll")
+list (APPEND NVIGI_DLLS "${NVIGI_PLUGIN_DLL_DIR}nvigi.plugin.tts.asqflow-ggml.vk.dll")
+list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGIN_DLL_DIR}Production/nvigi.plugin.tts.asqflow-ggml.vk.dll")
 
 # Glob all .bin files from the specified directory
 file(GLOB NVIGI_BIN_FILES "${NVIGI_PLUGINS_ROOT}/data/nvigi.test/nvigi.tts/ASqFlow/mel_spectrograms_targets/*.bin")
@@ -106,11 +119,11 @@ list (APPEND NVIGI_PRODUCTION_DLLS "${NVIGI_PLUGINS_ROOT}/data/nvigi.test/nvigi.
 if (NOT NVIGI_BUILD_ONLY)
     file(GLOB NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}cublas64_12.dll")
     list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}cublasLt64_12.dll")
-    list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}onnxruntime-genai.dll")
-    list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}DirectML.dll")
     list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}onnxruntime.dll")
 
     list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_CORE_DLL_DIR}cudart64_12.dll")
+
+    list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}dxcompiler.dll")
 
     list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}zlib1.dll")
 	list (APPEND NVIGI_3RDPARTY_DLLS "${NVIGI_3RDPARTY_DLL_DIR}libssl-3-x64.dll")
@@ -151,6 +164,8 @@ if (WIN32)
     if (NOT NVIGI_BUILD_ONLY)
         add_custom_command(TARGET CopyNVIGIDLLs
             COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NVIGI_3RDPARTY_DLLS} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/D3D12" 
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NVIGI_AGILITY_DLLS} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/D3D12/"
             COMMENT Copied DLLs: ${NVIGI_3RDPARTY_DLLS}
         )
     endif()
@@ -232,6 +247,7 @@ if(AMD_AGS)
 endif()
 
 add_compile_definitions(USE_DX12)
+add_compile_definitions(USE_VULKAN)
 
 # NDA ONLY DLSS-G DLSS_G Release
 add_compile_definitions(DLSSG_ALLOWED)

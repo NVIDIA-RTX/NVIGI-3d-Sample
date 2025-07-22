@@ -2,6 +2,7 @@ _bin/
 _build/
 _package/
 .vs
+external/
 nvigi_plugins/
 nvigi_core/
 nvigi_downloader/

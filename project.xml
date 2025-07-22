@@ -1,0 +1,6 @@
+<project toolsVersion="6.21">
+	<dependency name="vulkansdk" linkPath="external/vulkanSDK">
+		<package name="vulkansdk" version="1.4.304.0-windows-x86_64" platforms="windows-x86_64"/>
+		<package name="vulkansdk" version="1.4.304.0-linux_x86_64" platforms="linux-x86_64"/>
+	</dependency>
+</project>

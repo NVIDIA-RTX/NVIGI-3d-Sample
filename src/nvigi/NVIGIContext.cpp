@@ -15,15 +15,16 @@
 #include <nvrhi/d3d12.h>
 #endif
 
+#include "nvigi_vulkan.h"
 
 // NVIGI
 #include <nvigi.h>
 #include <nvigi_ai.h>
+#include <nvigi_hwi_common.h>
 #include <nvigi_hwi_cuda.h>
 #include <nvigi_gpt.h>
 #include <nvigi_asr_whisper.h>
 #include <nvigi_cloud.h>
-#include <nvigi_gpt_onnxgenai.h>
 #include <nvigi_security.h>
 #include <nvigi_tts.h>
 #include <source/utils/nvigi.dsound/player.h>
@@ -47,6 +48,9 @@
 #else
 #define PATH_MAX MAX_PATH
 #endif // _WIN32
+
+extern "C" __declspec(dllexport) UINT        D3D12SDKVersion = 615;
+extern "C" __declspec(dllexport) const char* D3D12SDKPath = ".\\D3D12\\";
 
 namespace fs = std::filesystem;
 
@@ -130,6 +134,11 @@ std::vector<std::string> GetPossibleTargetVoices(const std::wstring& directory) 
 NVIGIContext& NVIGIContext::Get() {
     static NVIGIContext instance;
     return instance;
+}
+
+void NVIGIContext::PresentEnd(donut::app::DeviceManager& manager)
+{
+    Get().FramerateLimit();
 }
 
 bool NVIGIContext::CheckPluginCompat(nvigi::PluginID id, const std::string& name)
@@ -427,6 +436,15 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
         return false;
     }
 
+    if (m_shippedModelsPath.empty())
+    {
+        using convert_type = std::codecvt_utf8<wchar_t>;
+        std::wstring_convert<convert_type, wchar_t> converter;
+
+        // Convert wstring to string
+        m_shippedModelsPath = converter.to_bytes(GetNVIGICoreDllPath()) + "\\..\\..\\nvigi.models";
+    }
+
     m_nvigiInit = (PFun_nvigiInit*)GetProcAddress(nvigiCore, "nvigiInit");
     m_nvigiShutdown = (PFun_nvigiShutdown*)GetProcAddress(nvigiCore, "nvigiShutdown");
     m_nvigiLoadInterface = (PFun_nvigiLoadInterface*)GetProcAddress(nvigiCore, "nvigiLoadInterface");
@@ -448,7 +466,16 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
         nvigiPref.numPathsToPlugins = _countof(paths);
         nvigiPref.utf8PathsToPlugins = paths;
 
-        if (!m_LogFilename.empty())
+        if (m_LogFilename.empty())
+        {
+            using convert_type = std::codecvt_utf8<wchar_t>;
+            std::wstring_convert<convert_type, wchar_t> converter;
+
+            static char defaultLogPath[MAX_PATH];
+            strncpy(defaultLogPath, (converter.to_bytes(GetNVIGICoreDllPath()) + "\\").c_str(), MAX_PATH);
+            nvigiPref.utf8PathToLogsAndData = defaultLogPath;
+        }
+        else
         {
             nvigiPref.utf8PathToLogsAndData = m_LogFilename.c_str();
         }
@@ -476,16 +503,25 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
 
     m_gpt.m_vramBudget = 8500;
 
-    AddGPTPlugin(nvigi::plugin::gpt::ggml::cuda::kId, "ggml.cuda", m_shippedModelsPath);
-    AddGPTCloudPlugin();
-    AddGPTPlugin(nvigi::plugin::gpt::onnxgenai::dml::kId, "onnxgenai", m_shippedModelsPath);
-
     m_gpt.m_choices = {
         nvigi::plugin::gpt::ggml::cuda::kId, // NVDA
-        nvigi::plugin::gpt::onnxgenai::dml::kId, // GPU
+        nvigi::plugin::gpt::ggml::d3d12::kId, // GPU
         nvigi::plugin::gpt::cloud::rest::kId, // Cloud
         nullPluginId // CPU
     };
+
+    AddGPTPlugin(nvigi::plugin::gpt::ggml::cuda::kId, "ggml.cuda", m_shippedModelsPath);
+    if (m_api == nvrhi::GraphicsAPI::D3D12)
+    {
+        m_gpt.m_choices.m_gpuFeatureID = nvigi::plugin::gpt::ggml::d3d12::kId;
+        AddGPTPlugin(nvigi::plugin::gpt::ggml::d3d12::kId, "ggml.d3d12", m_shippedModelsPath);
+    }
+    else if (m_api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        m_gpt.m_choices.m_gpuFeatureID = nvigi::plugin::gpt::ggml::vulkan::kId;
+        AddGPTPlugin(nvigi::plugin::gpt::ggml::vulkan::kId, "ggml.vk", m_shippedModelsPath);
+    }
+    AddGPTCloudPlugin();
 
     {
         // Select initial plugin m_gpt.m_info...  Or we set it to null?
@@ -509,15 +545,25 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
 
     m_asr.m_vramBudget = 3000;
 
-    AddASRPlugin(nvigi::plugin::asr::ggml::cuda::kId, "ggml.cuda", m_shippedModelsPath);
-    AddASRPlugin(nvigi::plugin::asr::ggml::cpu::kId, "ggml.cpu", m_shippedModelsPath);
-
     m_asr.m_choices = {
         nvigi::plugin::asr::ggml::cuda::kId, // NVDA
         nullPluginId, // GPU
         nullPluginId, // Cloud
         nvigi::plugin::asr::ggml::cpu::kId // CPU
     };
+
+    AddASRPlugin(nvigi::plugin::asr::ggml::cuda::kId, "ggml.cuda", m_shippedModelsPath);
+    if (m_api == nvrhi::GraphicsAPI::D3D12)
+    {
+        m_asr.m_choices.m_gpuFeatureID = nvigi::plugin::asr::ggml::d3d12::kId;
+        AddASRPlugin(nvigi::plugin::asr::ggml::d3d12::kId, "ggml.d3d12", m_shippedModelsPath);
+    }
+    else if (m_api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        m_asr.m_choices.m_gpuFeatureID = nvigi::plugin::asr::ggml::vulkan::kId;
+        AddASRPlugin(nvigi::plugin::asr::ggml::vulkan::kId, "ggml.vk", m_shippedModelsPath);
+    }
+    AddASRPlugin(nvigi::plugin::asr::ggml::cpu::kId, "ggml.cpu", m_shippedModelsPath);
 
     {
         // Select initial plugin m_asr.m_info...  Or we set it to null?
@@ -558,14 +604,23 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
 
     m_tts.m_vramBudget = 8500;
 
-    AddTTSPlugin(nvigi::plugin::tts::asqflow::trt::kId, "asqflow.trt", m_shippedModelsPath);
-
     m_tts.m_choices = {
-        nvigi::plugin::tts::asqflow::trt::kId, // NVDA
+        nvigi::plugin::tts::asqflow_trt::kId, // TRT (NVDA)
         nullPluginId, // GPU
         nullPluginId, // Cloud
-        nullPluginId // CPU
+        nullPluginId, // CPU
     };
+
+    AddTTSPlugin(nvigi::plugin::tts::asqflow_trt::kId, "asqflow-trt", m_shippedModelsPath);
+    if (m_api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        m_tts.m_choices.m_gpuFeatureID = nvigi::plugin::tts::asqflow_ggml::vulkan::kId;
+        AddTTSPlugin(nvigi::plugin::tts::asqflow_ggml::vulkan::kId, "asqflow-ggml-vk", m_shippedModelsPath);
+    }
+    else
+    {
+        AddTTSPlugin(nvigi::plugin::tts::asqflow_ggml::cuda::kId, "asqflow-ggml-cuda", m_shippedModelsPath);
+    }
 
     {
         // Set the TTS to unselected initially, as not everyone will want to use it
@@ -597,13 +652,19 @@ bool NVIGIContext::Initialize_preDeviceManager(nvrhi::GraphicsAPI api, int argc,
 
 bool NVIGIContext::Initialize_preDeviceCreate(donut::app::DeviceManager* deviceManager, donut::app::DeviceCreationParameters& params)
 {
-#if USE_DX12
+    nvrhi::RefCountPtr<IDXGIAdapter> dxgiAdapter;
+    uint32_t index = 0;
+
     if (m_api == nvrhi::GraphicsAPI::D3D11 || m_api == nvrhi::GraphicsAPI::D3D12)
     {
         donut::app::InstanceParameters instParams{};
 #ifdef _DEBUG
         instParams.enableDebugRuntime = true;
 #endif
+
+        params.enableComputeQueue = true;
+        params.enableCopyQueue = true;
+
         if (!deviceManager->CreateInstance(instParams))
             return false;
 
@@ -611,8 +672,6 @@ bool NVIGIContext::Initialize_preDeviceCreate(donut::app::DeviceManager* deviceM
         if (!deviceManager->EnumerateAdapters(outAdapters))
             return false;
 
-        nvrhi::RefCountPtr<IDXGIAdapter> dxgiAdapter;
-        uint32_t index = 0;
         for (auto& adapterDesc : outAdapters)
         {
             if (adapterDesc.vendorID == 4318)
@@ -623,12 +682,37 @@ bool NVIGIContext::Initialize_preDeviceCreate(donut::app::DeviceManager* deviceM
             }
             index++;
         }
-
-        if (dxgiAdapter)
-            if (S_OK != dxgiAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)m_targetAdapter.GetAddressOf()))
-                return false;
     }
-#endif
+    else if (m_api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        IDXGIFactory4* factory;
+        if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&factory)))
+        {
+            IDXGIAdapter3* adapter;
+            while (factory->EnumAdapters(index, reinterpret_cast<IDXGIAdapter**>(&adapter)) != DXGI_ERROR_NOT_FOUND)
+            {
+                DXGI_ADAPTER_DESC desc;
+                if (SUCCEEDED(adapter->GetDesc(&desc)))
+                {
+                    if (desc.VendorId == 4318 /* NVDA */ || desc.VendorId == 4098 /* AMD */)
+                    {
+                        dxgiAdapter = adapter;
+                        params.adapterIndex = index;
+                        break;
+                    }
+                    else
+                    {
+                        adapter->Release();
+                    }
+                }
+                index++;
+            }
+        }
+    }
+
+    if (dxgiAdapter)
+        if (S_OK != dxgiAdapter->QueryInterface(__uuidof(IDXGIAdapter3), (void**)m_targetAdapter.GetAddressOf()))
+            return false;
 
     return true;
 }
@@ -653,18 +737,34 @@ bool NVIGIContext::Initialize_postDevice()
         // the HWI.cuda plugin, so we need to keep it alive between tests by 
         // getting it here.
         nvigiGetInterfaceDynamic(nvigi::plugin::hwi::cuda::kId, &m_cig, m_nvigiLoadInterface);
+        nvigiGetInterfaceDynamic(nvigi::plugin::hwi::common::kId, &m_hwiCommon, m_nvigiLoadInterface);
     }
     else
     {
         donut::log::info("Not using a shared CUDA context - CiG disabled");
     }
 
+    if (m_api == nvrhi::GraphicsAPI::D3D11 || m_api == nvrhi::GraphicsAPI::D3D12)
     {
         m_d3d12Params = new nvigi::D3D12Parameters;
         m_d3d12Params->device = m_Device->getNativeObject(nvrhi::ObjectTypes::D3D12_Device);
 
         if (m_D3D12Queue != nullptr)
             m_d3d12Params->queue = m_D3D12Queue;
+        if (m_D3D12QueueCompute != nullptr)
+            m_d3d12Params->queueCompute = m_D3D12QueueCompute;
+        if (m_D3D12QueueCopy != nullptr)
+            m_d3d12Params->queueCopy = m_D3D12QueueCopy;
+    }
+    else if (m_api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        m_vkParams = new nvigi::VulkanParameters;
+        m_vkParams->device = m_Device->getNativeObject(nvrhi::ObjectTypes::VK_Device);
+        m_vkParams->physicalDevice = m_Device->getNativeObject(nvrhi::ObjectTypes::VK_PhysicalDevice);
+        m_vkParams->instance = m_Device->getNativeObject(nvrhi::ObjectTypes::VK_Instance);
+        m_vkParams->queue = m_Device->getNativeQueue(nvrhi::ObjectTypes::VK_Queue, nvrhi::CommandQueue::Graphics);
+        m_vkParams->queueCompute = m_Device->getNativeQueue(nvrhi::ObjectTypes::VK_Queue, nvrhi::CommandQueue::Compute);
+        m_vkParams->queueTransfer = m_Device->getNativeQueue(nvrhi::ObjectTypes::VK_Queue, nvrhi::CommandQueue::Copy);
     }
 
     size_t currentVRAM;
@@ -718,6 +818,15 @@ bool NVIGIContext::Initialize_postDevice()
 
             PluginModelInfo* ttsInfo = m_tts.m_info;
 
+            std::vector<std::string> targetVoices = GetPossibleTargetVoices(GetNVIGICoreDllPath());
+            // The initial value of the selected voice, if non-empty, was the voice we'd prefer if it is available
+            if (std::find(targetVoices.begin(), targetVoices.end(), m_ttsInferenceCtx.m_selectedTargetVoice) == targetVoices.end())
+            {
+                // We could not find that voice, so pick the first valid one...
+                if (!targetVoices.empty())
+                    m_ttsInferenceCtx.m_selectedTargetVoice = targetVoices[0];
+            }
+
             if (ttsInfo)
             {
                 nvigi::TTSCreationParameters* params2 = GetTTSCreationParams(false);
@@ -748,7 +857,11 @@ void NVIGIContext::SetDevice_nvrhi(nvrhi::IDevice* device)
 {
     m_Device = device;
     if (m_Device)
+    {
         m_D3D12Queue = m_Device->getNativeQueue(nvrhi::ObjectTypes::D3D12_CommandQueue, nvrhi::CommandQueue::Graphics);
+        m_D3D12QueueCompute = m_Device->getNativeQueue(nvrhi::ObjectTypes::D3D12_CommandQueue, nvrhi::CommandQueue::Compute);
+        m_D3D12QueueCopy = m_Device->getNativeQueue(nvrhi::ObjectTypes::D3D12_CommandQueue, nvrhi::CommandQueue::Copy);
+    }
 }
 
 void NVIGIContext::Shutdown()
@@ -762,6 +875,11 @@ void NVIGIContext::Shutdown()
     {
         delete m_d3d12Params;
         m_d3d12Params = nullptr;
+    }
+    if (m_vkParams)
+    {
+        delete m_vkParams;
+        m_vkParams = nullptr;
     }
 
     m_nvigiUnloadInterface(nvigi::plugin::hwi::cuda::kId, m_cig);
@@ -781,20 +899,35 @@ template <typename T> void NVIGIContext::FreeCreationParams(T* params)
     }
 }
 
-nvigi::D3D12Parameters* NVIGIContext::ChainD3DInfo(PluginModelInfo* info)
+nvigi::BaseStructure* NVIGIContext::Get3DInfo(PluginModelInfo* info)
 {
     if (info == nullptr)
         return nullptr;
 
-    nvigi::D3D12Parameters* d3d12Params = nullptr;
-    if (m_useCiG)
+    bool isD3D12Pluign = info->m_pluginName.find("d3d12") != std::string::npos;
+
+    if (m_api == nvrhi::GraphicsAPI::D3D12)
     {
-        d3d12Params = new nvigi::D3D12Parameters;
-        d3d12Params->device = m_d3d12Params->device;
-        d3d12Params->queue = m_d3d12Params->queue;
+        if (m_useCiG || isD3D12Pluign)
+        {
+            nvigi::D3D12Parameters* d3d12Params = new nvigi::D3D12Parameters;
+            d3d12Params->device = m_d3d12Params->device;
+            d3d12Params->queue = m_d3d12Params->queue;
+            d3d12Params->queueCompute = m_d3d12Params->queueCompute;
+            d3d12Params->queueCopy = m_d3d12Params->queueCopy;
+            return *d3d12Params;
+        }
+    }
+    else if (m_api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        nvigi::VulkanParameters* vkParams = new nvigi::VulkanParameters;
+        vkParams->device = m_vkParams->device;
+        vkParams->physicalDevice = m_vkParams->physicalDevice;
+        vkParams->instance = m_vkParams->instance;
+        return *vkParams;
     }
 
-    return d3d12Params;
+    return nullptr;
 }
 
 nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericInit, const std::string* modelRoot)
@@ -822,9 +955,9 @@ nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericIni
 
     nvigi::GPTCreationParameters* params1 = new nvigi::GPTCreationParameters;
 
-    if (nvigi::D3D12Parameters* d3d12Params = ChainD3DInfo(m_gpt.m_info))
+    if (nvigi::BaseStructure* apiParams = Get3DInfo(m_gpt.m_info))
     {
-        if (NVIGI_FAILED(res, params1->chain(*d3d12Params)))
+        if (NVIGI_FAILED(res, params1->chain(apiParams)))
             donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     }
 
@@ -837,16 +970,7 @@ nvigi::GPTCreationParameters* NVIGIContext::GetGPTCreationParams(bool genericIni
     if (genericInit)
         return params1;
 
-    if (info->m_featureID == nvigi::plugin::gpt::onnxgenai::dml::kId)
-    {
-        nvigi::GPTOnnxgenaiCreationParameters* onnxgenaiParamsPtr = new nvigi::GPTOnnxgenaiCreationParameters;
-        nvigi::GPTOnnxgenaiCreationParameters& onnxgenaiParams = *onnxgenaiParamsPtr;
-        onnxgenaiParams.backgroundMode = false;
-        onnxgenaiParams.allowAsync = false;
-        if (NVIGI_FAILED(res, params1->chain(onnxgenaiParams)))
-            donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
-    }
-    else if (info->m_featureID == nvigi::plugin::gpt::cloud::rest::kId)
+    if (info->m_featureID == nvigi::plugin::gpt::cloud::rest::kId)
     {
         const char* key = nullptr;
         std::string apiKeyName = "";
@@ -893,9 +1017,9 @@ nvigi::ASRWhisperCreationParameters* NVIGIContext::GetASRCreationParams(bool gen
 
     nvigi::ASRWhisperCreationParameters* params1 = new nvigi::ASRWhisperCreationParameters;
 
-    if (nvigi::D3D12Parameters* d3d12Params = ChainD3DInfo(m_asr.m_info))
+    if (nvigi::BaseStructure* apiParams = Get3DInfo(m_asr.m_info))
     {
-        if (NVIGI_FAILED(res, params1->chain(*d3d12Params)))
+        if (NVIGI_FAILED(res, params1->chain(apiParams)))
             donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
     }
 
@@ -935,12 +1059,14 @@ nvigi::TTSCreationParameters* NVIGIContext::GetTTSCreationParams(bool genericIni
 
     nvigi::TTSASqFlowCreationParameters* ttsASqFlowParams = new nvigi::TTSASqFlowCreationParameters;
 
-    if (nvigi::D3D12Parameters* d3d12Params = ChainD3DInfo(m_tts.m_info))
+    if (!info || info->m_featureID != nvigi::plugin::tts::asqflow_ggml::vulkan::kId)
     {
-        if (NVIGI_FAILED(res, params1->chain(*d3d12Params)))
-            donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
+        if (nvigi::BaseStructure* apiParams = Get3DInfo(m_tts.m_info))
+        {
+            if (NVIGI_FAILED(res, params1->chain(apiParams)))
+                donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
+        }
     }
-
     if (NVIGI_FAILED(res, params1->chain(*common1)))
         donut::log::error("Internal error chaining structs: %s: %s", __FILE__, __LINE__);
 
@@ -1145,15 +1271,15 @@ nvigi::InferenceExecutionState ttsCallback(const nvigi::InferenceExecutionContex
             buffer.Play();
             buffer.Wait();
             mtxPlayAudio.unlock();
-
         };
 
 
     if (ctx)
     {
+        nvigi.m_ttsFirstAudioTimer.Stop();
         auto slots = ctx->outputs;
         std::vector<int16_t> tempChunkAudio;
-        std::scoped_lock lck(nvigi.m_ttsInferenceCtx.ttsCallbackMutex);
+        std::scoped_lock lck(nvigi.m_tts.m_callbackMutex);
 
         std::vector<int16_t>& outputVector = nvigi.m_ttsOutputAudio;
         const nvigi::InferenceDataByteArray* outputAudioData{};
@@ -1172,15 +1298,16 @@ nvigi::InferenceExecutionState ttsCallback(const nvigi::InferenceExecutionContex
         nvigi.m_ttsInferenceCtx.playAudioThreads.push(std::make_unique<std::thread>(
             std::thread(playAudio, tempChunkAudio, 22050, std::ref(nvigi.m_ttsInferenceCtx.mtxPlayAudio))));
     }
+
     if (state == nvigi::kInferenceExecutionStateDone)
     {
-        std::scoped_lock lock(nvigi.m_ttsInferenceCtx.ttsCallbackMutex);
+        std::scoped_lock lock(nvigi.m_tts.m_callbackMutex);
     }
 
     // Signal the calling thread, since we may be an async evalutation
     {
-        std::unique_lock lck(nvigi.m_ttsInferenceCtx.ttsCallbackMutex);
-        nvigi.m_tts.m_callbackState = state;
+        std::unique_lock lck(nvigi.m_tts.m_callbackMutex);
+        nvigi.m_tts.m_callbackState.store(state);
         nvigi.m_tts.m_callbackCV.notify_one();
     }
 
@@ -1189,6 +1316,8 @@ nvigi::InferenceExecutionState ttsCallback(const nvigi::InferenceExecutionContex
 
 void NVIGIContext::LaunchASR()
 {
+    m_newInferenceSequence = true;
+
     if (!m_asr.m_ready)
     {
         donut::log::warning("Skipping Speech to Text as it is still loading or failed to load");
@@ -1242,8 +1371,14 @@ void NVIGIContext::LaunchASR()
             ctx.callbackUserData = this;
             nvigi::InferenceDataSlotArray inputs = { inSlots.size(), inSlots.data() };
             ctx.inputs = &inputs;
+
+            if (m_hwiCommon)
+                m_hwiCommon->SetGpuInferenceSchedulingMode(m_schedulingMode);
+
             m_asr.m_running.store(true);
+            m_asrTimer.Start();
             m_asr.m_inst->evaluate(&ctx);
+            m_asrTimer.Stop();
             m_asr.m_running.store(false);
 
             m_inferThreadRunning = false;
@@ -1253,6 +1388,8 @@ void NVIGIContext::LaunchASR()
 
 void NVIGIContext::LaunchGPT(std::string prompt)
 {
+    m_newInferenceSequence = true;
+
     auto gptCallback = [](const nvigi::InferenceExecutionContext* ctx, nvigi::InferenceExecutionState state, void* data)->nvigi::InferenceExecutionState
         {
             if (!data)
@@ -1270,10 +1407,12 @@ void NVIGIContext::LaunchGPT(std::string prompt)
                 {
                     if (str.find("<JSON>") == std::string::npos)
                     {
-                        std::scoped_lock lock(nvigi.m_mtx);
                         if (nvigi.m_conversationInitialized)
                         {
-                            messages.back().text.append(str);
+                            {
+                                std::scoped_lock lock(nvigi.m_mtx);
+                                messages.back().text.append(str);
+                            }
                             nvigi.AppendTTSText(str, state == nvigi::kInferenceExecutionStateDone);
                         }
                     }
@@ -1283,6 +1422,7 @@ void NVIGIContext::LaunchGPT(std::string prompt)
                         std::scoped_lock lock(nvigi.m_mtx);
                     }
                 }
+                nvigi.m_gptFirstTokenTimer.Stop();
             }
             if (state == nvigi::kInferenceExecutionStateDone)
             {
@@ -1325,7 +1465,11 @@ void NVIGIContext::LaunchGPT(std::string prompt)
                     // By default, before any callback, we always have "data pending"
                     m_gpt.m_callbackState = nvigi::kInferenceExecutionStateDataPending;
 
+                    if (m_hwiCommon)
+                        m_hwiCommon->SetGpuInferenceSchedulingMode(m_schedulingMode);
+                    
                     m_gpt.m_running.store(true);
+					m_gptFirstTokenTimer.Start();
                     nvigi::Result res = m_gpt.m_inst->evaluate(&ctx);
 
                     // Wait for the GPT to stop returning eDataPending in the callback
@@ -1334,6 +1478,15 @@ void NVIGIContext::LaunchGPT(std::string prompt)
                         std::unique_lock lck(m_gpt.m_callbackMutex);
                         m_gpt.m_callbackCV.wait(lck, [&, this]() { return m_gpt.m_callbackState != nvigi::kInferenceExecutionStateDataPending; });
                     }
+
+                    if (res == nvigi::kResultOk && m_tts.m_ready)
+                    {
+                        // Wait for the TTS to stop returning eDataPending in the callback
+                        std::unique_lock lck(m_tts.m_callbackMutex);
+                        m_tts.m_callbackCV.wait(lck, [&, this]() { return m_tts.m_callbackState != nvigi::kInferenceExecutionStateDataPending; });
+                        m_ttsOutputAudio.clear();
+                    }
+
                 };
 
             if (!m_conversationInitialized)
@@ -1402,72 +1555,98 @@ void NVIGIContext::AppendTTSText(std::string text, bool done)
             m_ttsInferenceCtx.posLastPeriod = 0;
             m_ttsInferenceCtx.posLastSpace = 0;
             m_ttsInferenceCtx.posLastComma = 0;
-            m_tts.m_callbackState.store(nvigi::kInferenceExecutionStateDataPending);
 
             // Synchronous TTS inference. We wait for TTS to finish before resuming GPT
             if (m_tts.m_ready)
             {
                 LaunchTTS(chunkToProcess);
             }
+
         }
     }
 }
 
 void NVIGIContext::LaunchTTS(std::string prompt)
 {
-    auto l = [this, prompt]()->void
+    if (m_newInferenceSequence)
+    { 
+        m_ttsFirstAudioTimer.Start();
+        m_newInferenceSequence = false;
+    }
+    
+    m_inferThreadRunning = true;
+
+    // Remove non-UTF-8 characters inside a string
+    auto removeNonUTF8 = [](const std::string& input)->std::string
         {
-            m_inferThreadRunning = true;
-
-            // Remove non-UTF-8 characters inside a string
-            auto removeNonUTF8 = [](const std::string& input)->std::string
-                {
-                    std::string output;
-                    int countNonUtf8 = 0;
-                    for (char ch : input) {
-                        if (ch >= 0 && ch <= 127) { // ASCII range (valid UTF-8 single byte)
-                            output += ch;
-                        }
-                        else {
-                            countNonUtf8++;
-                        }
-                    }
-                    return output;
-                };
-
-            auto eval = [this](std::string prompt, bool initConversation)->void
-                {
-
-                    static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> convert;
-                    std::string targetPathSpectrogram = convert.to_bytes(GetNVIGICoreDllPath().c_str()) + "/" + m_ttsInferenceCtx.m_selectedTargetVoice + "_se.bin";
-
-                    m_ttsInferenceCtx.dataTextTTS = prompt;
-                    m_ttsInferenceCtx.dataTextTargetPathSepctrogram = targetPathSpectrogram;
-
-                    // By default, before any callback, we always have "data pending"
-                    m_tts.m_callbackState = nvigi::kInferenceExecutionStateDataPending;
-
-                    m_tts.m_running.store(true);
-                    nvigi::Result res = m_tts.m_inst->evaluate(&m_ttsInferenceCtx.m_ttsCtx);
-
-                    // Wait for the TTS to stop returning eDataPending in the callback
-                    if (res == nvigi::kResultOk)
-                    {
-                        std::unique_lock lck(m_tts.m_callbackMutex);
-                        m_tts.m_callbackCV.wait(lck, [&, this]() { return m_tts.m_callbackState != nvigi::kInferenceExecutionStateDataPending; });
-                    }
-                    m_ttsOutputAudio.clear();
-                };
-
-            std::string promptNonUTF8 = removeNonUTF8(prompt);
-            eval(promptNonUTF8, false);
-
-            m_tts.m_running.store(false);
-
-            m_inferThreadRunning = false;
+            std::string output;
+            int countNonUtf8 = 0;
+            for (char ch : input) {
+                if (ch >= 0 && ch <= 127) { // ASCII range (valid UTF-8 single byte)
+                    output += ch;
+                }
+                else {
+                    countNonUtf8++;
+                }
+            }
+            return output;
         };
-    //m_inferThread = new std::thread{ l };
-    l();
+    
+    auto preprocessPrompt = [](std::string prompt)->std::string
+        {
+            // GPT answers can produce a lot of asterisks, and TTS will read them as a word.
+            // We need to remove them except when they're between numbers (e.g., keep "3*5" but remove standalone *)
+
+            // Step 1: Temporarily replace number*number patterns with a placeholder
+            std::string result = std::regex_replace(prompt, std::regex(R"((\d)\*(\d))"), "$1MULT$2");
+            
+            // Step 2: Remove all remaining asterisks
+            result = std::regex_replace(result, std::regex(R"(\*)"), "");
+            
+            // Step 3: Restore the multiplication patterns
+            result = std::regex_replace(result, std::regex(R"(MULT)"), "*");
+            
+            return result;
+        };
+
+    auto eval = [this](std::string prompt, bool initConversation)->void
+        {
+            std::scoped_lock lck(m_ttsInferenceCtx.ttsCallbackMutex);
+
+            static std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> convert;
+            std::string targetPathSpectrogram = convert.to_bytes(GetNVIGICoreDllPath().c_str()) + "/" + m_ttsInferenceCtx.m_selectedTargetVoice + "_se.bin";
+
+            m_ttsInferenceCtx.dataTextTTS = prompt;
+            m_ttsInferenceCtx.dataTextTargetPathSepctrogram = targetPathSpectrogram;
+			
+            // TODO : this parameters is not taken into account. It will always be 16 (optimal latency). 
+            // Needs to be fixed !
+            m_ttsInferenceCtx.runtimeTTS.n_timesteps = 16;
+
+            // By default, before any callback, we always have "data pending"
+            m_tts.m_callbackState.store(nvigi::kInferenceExecutionStateDataPending);
+
+            if (m_hwiCommon)
+                m_hwiCommon->SetGpuInferenceSchedulingMode(m_schedulingMode);
+
+            m_tts.m_running.store(true);
+            nvigi::Result res = m_tts.m_inst->evaluate(&m_ttsInferenceCtx.m_ttsCtx);
+
+			if (res != nvigi::kResultOk)
+			{
+                // Notifiy invalide state
+				m_tts.m_callbackState.store(nvigi::kInferenceExecutionStateInvalid);
+				m_tts.m_callbackCV.notify_one();
+			}
+        };
+
+    std::string promptNonUTF8 = removeNonUTF8(preprocessPrompt(prompt));
+    std::string preprocessedPrompt = preprocessPrompt(prompt);
+    eval(promptNonUTF8, false);
+
+    m_tts.m_running.store(false);
+
+    m_inferThreadRunning = false;
 }
 
 void NVIGIContext::FlushInferenceThread()
@@ -1550,6 +1729,35 @@ bool NVIGIContext::ModelsComboBox(const std::string& label, bool automatic, Stag
                 changed = true;
             }
 
+            // Available models
+            for (auto m : models)
+            {
+                for (auto it : m.second)
+                {
+                    NVIGIContext::PluginModelInfo* newInfo = it;
+                    bool is_selected = newInfo == info;
+                    const char* key = nullptr;
+                    if (newInfo)
+                    {
+                        std::string apiKeyName = "";
+                        bool cloudNotAvailable = (newInfo->m_modelStatus == ModelStatus::AVAILABLE_CLOUD) && !GetCloudModelAPIKey(*newInfo, key, apiKeyName);
+                        if (cloudNotAvailable)
+                        {
+                            // skip
+                        }
+                        else if (newInfo->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY || newInfo->m_modelStatus == ModelStatus::AVAILABLE_CLOUD)
+                        {
+                            if (ImGui::Selectable(newInfo->m_caption.c_str(), is_selected))
+                            {
+                                changed = !is_selected;
+                                info = newInfo;
+                            }
+                        }
+                        if (is_selected) ImGui::SetItemDefaultFocus();
+                    }
+                }
+            }
+            // Unavailable models
             for (auto m : models)
             {
                 for (auto it : m.second)
@@ -1565,19 +1773,10 @@ bool NVIGIContext::ModelsComboBox(const std::string& label, bool automatic, Stag
                         {
                             ImGui::TextDisabled((newInfo->m_pluginName + ": No " + apiKeyName + " API KEY " + newInfo->m_modelName).c_str());
                         }
-                        else if (newInfo->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY || newInfo->m_modelStatus == ModelStatus::AVAILABLE_CLOUD)
-                        {
-                            if (ImGui::Selectable(newInfo->m_caption.c_str(), is_selected))
-                            {
-                                changed = !is_selected;
-                                info = newInfo;
-                            }
-                        }
                         else if (newInfo->m_modelStatus == ModelStatus::AVAILABLE_MANUAL_DOWNLOAD)
                         {
                             ImGui::TextDisabled((newInfo->m_caption + ": MANUAL DOWNLOAD").c_str());
                         }
-                        if (is_selected) ImGui::SetItemDefaultFocus();
                     }
                 }
             }
@@ -1606,7 +1805,7 @@ bool NVIGIContext::SelectAutoPlugin(const StageInfo& stage, const std::vector<Pl
     if (auto info = findOption(stage.m_choices.m_nvdaFeatureID))
     {
         // Only use if we have enough VRAM budgetted
-        if (stage.m_vramBudget >= info->m_vram)
+        if (info->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY && stage.m_vramBudget >= info->m_vram)
         {
             model = info;
             return true;
@@ -1617,7 +1816,7 @@ bool NVIGIContext::SelectAutoPlugin(const StageInfo& stage, const std::vector<Pl
     if (auto info = findOption(stage.m_choices.m_gpuFeatureID))
     {
         // Only use if we have enough VRAM budgetted
-        if (stage.m_vramBudget >= info->m_vram)
+        if (info->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY && stage.m_vramBudget >= info->m_vram)
         {
             model = info;
             return true;
@@ -1639,8 +1838,11 @@ bool NVIGIContext::SelectAutoPlugin(const StageInfo& stage, const std::vector<Pl
     // What about CPU?
     if (auto info = findOption(stage.m_choices.m_cpuFeatureID))
     {
-        model = info;
-        return true;
+        if (info->m_modelStatus == ModelStatus::AVAILABLE_LOCALLY)
+        {
+            model = info;
+            return true;
+        }
     }
 
     // No viable options...
@@ -1649,12 +1851,55 @@ bool NVIGIContext::SelectAutoPlugin(const StageInfo& stage, const std::vector<Pl
 
 bool NVIGIContext::BuildModelsSelectUI()
 {
-    if (!m_gpt.m_running && !m_asr.m_running && !m_tts.m_running && !m_recording)
+    bool isOpen = false;
+    if (ImGui::CollapsingHeader("App Settings..."))
     {
-        if (ImGui::CollapsingHeader("Model Settings..."))
+		const static std::map<std::string, uint32_t> schedulingModes = {
+			{ "Prioritize Graphics", (uint32_t)nvigi::SchedulingMode::kPrioritizeGraphics },
+			{ "Prioritize Inference", (uint32_t)nvigi::SchedulingMode::kPrioritizeCompute },
+			{ "Balanced", (uint32_t)nvigi::SchedulingMode::kBalance}
+		};
+        std::string value = "Not Selected";
+        for (auto& iter : schedulingModes)
+            if (iter.second == m_schedulingMode)
+			{
+				value = iter.first;
+				break;
+			}
+
+        if (ImGui::BeginCombo("Scheduling Mode", value.c_str()))
         {
-            ImGui::Checkbox("Automatic Backend Selection", &m_automaticBackendSelection);
+            for (auto m : schedulingModes)
+            {
+                bool is_selected = m_schedulingMode == m.second;
+                if (ImGui::Selectable(m.first.c_str(), &is_selected) || is_selected)
+                {
+                    m_schedulingMode = m.second;
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::Checkbox("Frame Rate Limiter", &m_framerateLimiting);
+        if (m_framerateLimiting)
+        {
             ImGui::Separator();
+            const int maxFPS = 300;
+            if (ImGui::InputInt("Target FPS", &m_targetFramerate, 1, maxFPS, ImGuiInputTextFlags_EnterReturnsTrue))
+            {
+                if (m_targetFramerate < 1)
+                    m_targetFramerate = 1;
+                if (m_targetFramerate > maxFPS)
+                    m_targetFramerate = maxFPS;
+            }
+        }
+        isOpen = true;
+    }
+    if (ImGui::CollapsingHeader("Model Settings..."))
+    {
+        ImGui::Checkbox("Automatic Backend Selection", &m_automaticBackendSelection);
+        ImGui::Separator();
+        {
+            ImGui::BeginDisabled(m_recording || m_asr.m_running);
             ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
             ImGui::Text("Automatic Speech Recognition");
             ImGui::PopStyleColor();
@@ -1662,22 +1907,29 @@ bool NVIGIContext::BuildModelsSelectUI()
             PluginModelInfo* newInfo = m_asr.m_info;
             if (ModelsComboBox("##ASR", m_automaticBackendSelection, m_asr, newInfo))
                 ReloadASRModel(newInfo);
+            ImGui::EndDisabled();
+        }
 
-            ImGui::Separator();
+        ImGui::Separator();
+        {
+            ImGui::BeginDisabled(m_gpt.m_running);
             ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
             ImGui::Text("GPT");
             ImGui::PopStyleColor();
 
-            newInfo = m_gpt.m_info;
+            PluginModelInfo* newInfo = m_gpt.m_info;
             if (ModelsComboBox("##GPT", m_automaticBackendSelection, m_gpt, newInfo))
                 ReloadGPTModel(newInfo);
-
-            ImGui::Separator();
+            ImGui::EndDisabled();
+        }
+        ImGui::Separator();
+        {
+            ImGui::BeginDisabled(m_tts.m_running);
             ImGui::PushStyleColor(ImGuiCol_Text, TITLE_COL);
             ImGui::Text("TTS");
             ImGui::PopStyleColor();
 
-            newInfo = m_tts.m_info;
+            PluginModelInfo* newInfo = m_tts.m_info;
             if (ModelsComboBox("##TTS", m_automaticBackendSelection, m_tts, newInfo))
                 ReloadTTSModel(newInfo);
 
@@ -1695,12 +1947,12 @@ bool NVIGIContext::BuildModelsSelectUI()
                 }
                 ImGui::EndCombo();
             }
-
-
-            return true;
+            ImGui::EndDisabled();
         }
+
+        isOpen = true;
     }
-    return false;
+    return isOpen;
 }
 
 void NVIGIContext::BuildModelsStatusUI()
@@ -1783,13 +2035,14 @@ void NVIGIContext::BuildChatUI()
         static float lastScrollMaxY = 0.0f;
         static size_t lastMsgCount = 0;
 
-        auto child_size = ImVec2(ImGui::GetWindowContentRegionWidth(), 600);
+        // Shorten text box if settings are visible
+        auto child_size = ImVec2(ImGui::GetWindowContentRegionWidth(), m_modelSettingsOpen ? 300 : 800);
         if (ImGui::BeginChild("Chat UI", child_size, false))
         {
             if (m_gpt.m_ready || m_asr.m_ready || m_tts.m_ready)
             {
                 // Create a child window with a scrollbar for messages
-                if (ImGui::BeginChild("Messages", ImVec2(0, -2 * ImGui::GetFrameHeightWithSpacing()), true))
+                if (ImGui::BeginChild("Messages", ImVec2(0, -5 * ImGui::GetFrameHeightWithSpacing()), true))
                 {
                     ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + child_size.x - 30);  // Wrapping text before the edge, added a small offset for aesthetics
 
@@ -1829,7 +2082,7 @@ void NVIGIContext::BuildChatUI()
         }
 
         // Do not show Send when ASR or GPT is running, or when we're recording audio
-        if (!m_gpt.m_running && !m_asr.m_running)
+        if (!m_gpt.m_running && !m_asr.m_running &&!m_tts.m_running)
         {
             ImGui::PushItemWidth(ImGui::GetWindowContentRegionWidth());
             // Input text box and button to send messages
@@ -1839,12 +2092,20 @@ void NVIGIContext::BuildChatUI()
                 {
                     m_gptInput = inputBuffer;
                     m_gptInputReady = true;
+                    inputBuffer[0] = '\0';  // Clear the buffer
                 }
                 else if (m_tts.m_ready)
                 {
-                    AppendTTSText(inputBuffer, true);
+                    m_newInferenceSequence = true;
+
+					auto inferTTS = [this]()->void
+						{
+							AppendTTSText(inputBuffer, true);
+                            inputBuffer[0] = '\0';  // Clear the buffer
+
+						};
+                    m_inferThread = new std::thread{ inferTTS };
                 }
-                inputBuffer[0] = '\0';  // Clear the buffer
                 // Focus is lost when we hit enter, so we need to reacquire it to type another prompt
                 setFocusOnPromptInput = true;
             }
@@ -1893,6 +2154,16 @@ void NVIGIContext::BuildChatUI()
                 }
             }
         }
+        if (ImGui::BeginChild("Performance"))
+        {
+            if (m_asr.m_ready)
+                ImGui::Text("ASR Total: %.2f ms", m_asrTimer.GetElapsedMiliseconds());
+            if (m_gpt.m_ready)
+                ImGui::Text("GPT First Token: %.2f ms", m_gptFirstTokenTimer.GetElapsedMiliseconds());
+            if (m_tts.m_ready)
+                ImGui::Text("TTS First Audio: %.2f ms", m_ttsFirstAudioTimer.GetElapsedMiliseconds());
+        }
+        ImGui::EndChild();
         ImGui::EndChild();
     }
     else
@@ -1920,10 +2191,9 @@ void NVIGIContext::BuildUI()
         }
     }
 
-    if (!m_modelSettingsOpen)
-        BuildChatUI();
     BuildModelsStatusUI();
     m_modelSettingsOpen = BuildModelsSelectUI();
+    BuildChatUI();
 }
 
 void NVIGIContext::GetVRAMStats(size_t& current, size_t& budget)

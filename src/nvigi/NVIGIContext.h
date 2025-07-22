@@ -6,6 +6,7 @@
 #include <nvrhi/nvrhi.h>
 #include <donut/app/DeviceManager.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <exception>
 #include <fstream>
@@ -49,7 +50,9 @@ namespace nvigi {
     struct TTSCreationParameters;
 
     struct D3D12Parameters;
+    struct VulkanParameters;
     struct IHWICuda;
+    struct IHWICommon;
     struct InferenceInterface;
     using IGeneralPurposeTransformer = InferenceInterface;
     using IAutoSpeechRecognition = InferenceInterface;
@@ -57,6 +60,40 @@ namespace nvigi {
 
     using InferenceExecutionState = uint32_t;
     struct InferenceInstance;
+};
+
+using namespace std::chrono_literals;
+
+struct SimpleTimer {
+	SimpleTimer() : running(false), totalTime(std::chrono::high_resolution_clock::duration::zero()) {}
+	void Start(bool reset = true) {
+		if (reset) {
+			totalTime = std::chrono::high_resolution_clock::duration::zero();
+		}
+		if (!running) {
+			baseTime = std::chrono::high_resolution_clock::now();
+			running = true;
+		}
+	}
+	void Stop() {
+		if (running) {
+			totalTime += std::chrono::high_resolution_clock::now() - baseTime;
+			running = false;
+		}
+	}
+	void Reset() {
+		totalTime = std::chrono::high_resolution_clock::duration::zero();
+		if (running) {
+			baseTime = std::chrono::high_resolution_clock::now();
+		}
+	}
+	double GetElapsedMiliseconds() const {
+		return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(running ? (std::chrono::high_resolution_clock::now() - baseTime) : totalTime).count();
+	}
+
+	bool running = false;
+    std::chrono::high_resolution_clock::time_point baseTime;
+    std::chrono::high_resolution_clock::duration totalTime;
 };
 
 struct NVIGIContext
@@ -141,7 +178,7 @@ struct NVIGIContext
     void BuildChatUI();
     void BuildUI();
 
-    static void PresentStart(donut::app::DeviceManager& manager) {};
+    static void PresentEnd(donut::app::DeviceManager& manager);
 
     template <typename T> void FreeCreationParams(T* params);
 
@@ -153,6 +190,24 @@ struct NVIGIContext
     void ReloadASRModel(PluginModelInfo* newInfo);
     void ReloadTTSModel(PluginModelInfo* newInfo);
     void FlushInferenceThread();
+
+    void FramerateLimit()
+    {
+        if (!m_framerateLimiting)
+            return;
+
+        if (m_framerateTimer.running)
+        {
+            m_framerateTimer.Stop();
+            double leftoverTime = 1000.0 / (double)m_targetFramerate - m_framerateTimer.GetElapsedMiliseconds();
+			if (leftoverTime > 0.0)
+				std::this_thread::sleep_for(std::chrono::milliseconds((int)leftoverTime));
+		}
+        m_framerateTimer.Start();
+    }
+    bool m_framerateLimiting = false;
+    int m_targetFramerate = 60;
+	SimpleTimer m_framerateTimer;
 
     StageInfo m_asr;
     StageInfo m_gpt;
@@ -209,7 +264,7 @@ struct NVIGIContext
     }
 
     struct TTSInferenceContext {
-        std::string m_selectedTargetVoice = "02_F-Emma_Maidenberg_15s";
+        std::string m_selectedTargetVoice = "03_M-Tom_Sawyer_15s";
         nvigi::InferenceDataTextSTLHelper dataTextTTS = "";
         nvigi::InferenceDataTextSTLHelper dataTextTargetPathSepctrogram = "";
         std::vector<nvigi::InferenceDataSlot> inSlotsTTS;
@@ -244,8 +299,10 @@ struct NVIGIContext
 
     nvrhi::IDevice* m_Device = nullptr;
     nvrhi::RefCountPtr<ID3D12CommandQueue> m_D3D12Queue = nullptr;
+    nvrhi::RefCountPtr<ID3D12CommandQueue> m_D3D12QueueCompute = nullptr;
+    nvrhi::RefCountPtr<ID3D12CommandQueue> m_D3D12QueueCopy = nullptr;
     std::string m_appUtf8path = "";
-    std::string m_shippedModelsPath = "../../nvigi.models";
+    std::string m_shippedModelsPath = "";
     std::string m_modelASR;
     std::string m_LogFilename = "";
     std::string m_systemPromptGPT = "You are a helpful AI agent. Your goal is to provide information about queries.\
@@ -261,11 +318,13 @@ struct NVIGIContext
     nvigi::IAutoSpeechRecognition* m_iasr{};
     nvigi::ITextToSpeech* m_itts{};
     nvigi::IHWICuda* m_cig{};
+    nvigi::IHWICommon* m_hwiCommon{};
     std::string m_ttsInput;
 
     std::string grpcMetadata{};
     std::string nvcfToken{};
 
+    bool m_newInferenceSequence = false;
     bool m_recording = false;
     std::atomic<bool> m_gptInputReady = false;
     std::string m_a2t;
@@ -285,14 +344,22 @@ struct NVIGIContext
     std::vector<int16_t> m_ttsOutputAudio;
     AudioRecordingHelper::RecordingInfo* m_audioInfo{};
 
-    nvigi::D3D12Parameters* ChainD3DInfo(PluginModelInfo* info);
+    nvigi::BaseStructure* Get3DInfo(PluginModelInfo* info);
 
 #ifdef USE_DX12
     nvigi::D3D12Parameters* m_d3d12Params{};
     nvrhi::RefCountPtr<IDXGIAdapter3> m_targetAdapter;
 #endif
+#ifdef USE_VULKAN
+    nvigi::VulkanParameters* m_vkParams{};
+#endif
     nvrhi::GraphicsAPI m_api = nvrhi::GraphicsAPI::D3D12;
     size_t m_maxVRAM = 0;
+    uint32_t m_schedulingMode = nvigi::SchedulingMode::kPrioritizeCompute;
+
+	SimpleTimer m_asrTimer;
+    SimpleTimer m_gptFirstTokenTimer;
+    SimpleTimer m_ttsFirstAudioTimer;
 };
 
 struct cerr_redirect {

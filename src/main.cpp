@@ -97,6 +97,10 @@ bool ProcessCommandLine(int argc, const char* const* argv, Parameters& params)
         {
             params.renderScene = false;
         }
+        else if (!strcmp(argv[i], "-fullscreen"))
+        {
+            params.deviceParams.startFullscreen = false;
+        }
     }
 
     return true;
@@ -126,6 +130,11 @@ int main(int __argc, const char* const* __argv)
     params.deviceParams.startFullscreen = false;
     params.deviceParams.vsyncEnabled = false;
     params.deviceParams.swapChainFormat = nvrhi::Format::BGRA8_UNORM;
+    if (api == nvrhi::GraphicsAPI::VULKAN)
+    {
+        params.deviceParams.enableComputeQueue = true;
+        params.deviceParams.enableCopyQueue = true;
+    }
 
     if (!ProcessCommandLine(__argc, __argv, params))
     {

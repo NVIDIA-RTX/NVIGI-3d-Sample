@@ -1,0 +1,6 @@
+<config remotes="habilis-public">
+  <remote2 name="habilis-public">
+    <transport actions="download" protocol="https" packageLocation="d1b766znqykvab.cloudfront.net/${name}@${version}"/>
+  </remote2>
+</config>
+

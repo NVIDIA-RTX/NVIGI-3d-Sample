@@ -1,5 +1,4 @@
 # NVIGI 3D Sample
-Version 1.1.1
 
 This project combines NVIGI and Donut (https://github.com/NVIDIAGameWorks/donut) to create a sample app demonstrating an NVIGI AI integration.
 
@@ -8,18 +7,18 @@ This project combines NVIGI and Donut (https://github.com/NVIDIAGameWorks/donut)
 
 ## What is the Sample?
 
-The Donut-based NVIDIA NVIGI (In-Game Inference) 3D Sample is an interactive 3D application that is designed to show how one might integrate such AI features as speech recognition (ASR) and chatbots (GPT/LLM) into a UI-based workflow.  The focus in the sample is showing how to present the options to the user and run AI workflows without blocking the 3D interaction or rendering. 
+The Donut-based NVIDIA NVIGI (In-Game Inference) 3D Sample is an interactive 3D application that is designed to show how one might integrate such AI features as speech recognition (ASR) and chatbots (GPT/LLM) into a UI-based workflow.  The focus in the sample is showing how to present the options to the user and run AI workflows without blocking the 3D interaction or rendering.  The sample defaults to rendering with Direct3D 12, but via a command-line option can switch to rendering via Vulkan.
 
 ## Requirements
 - Hardware:
   - Windows development system with an NVIDIA RTX 30x0/A6000 series or (preferably) 4080/4090 or RTX 5080/5090 with a minimum of 8GB and recommendation of 12GB VRAM.  Note that some plugins only support 40x0 and above (e.g. the TensorRT-LLM plugin), and will not be available on 30x0. Currently SDK supports only x64 CPUs.
 - Software:
   - NVIDIA RTX driver
-    - r551.78 or newer required for functionality 
-    - For maximum performance, an r555.85 or newer driver is recommended
-  - MS Visual Studio 2022 (2019 may be compatible, untested)
-  - cmake (3.27.1 tested) installed in the command prompt path
+    - r580 or newer required for all D3D12-based plugins and for maximum performance of all features
+    - r551.78 or newer required for all other functionality 
+  - MS Visual Studio 2022
   - Windows SDK including DirectX SDK.  Ensure that FXC.exe (https://learn.microsoft.com/en-us/windows/win32/direct3dtools/fxc) is in your PATH.
+  - The Microsoft Agility SDK DLL (D3D12Core.dll) must be in a `D3D12` subdirectory of the location of the sample's executable.  The build process should pull this from the NVIGI Plugins SDK subdirectory.  However, if that DLL is not in place, the sample will fail to create a valid D3D12 device with the error: "ERROR: Cannot initialize a D3D12 graphics device with the requested parameters".  Check your NVIGI Plugins SDK for a `D3D12/D3D12Core.dll` directory in the plugin DLLs directory and check the documentation shipped with the Plugins SDK in case of trouble.
 - Etc:
   - An NVIDIA Integrate API key, needed to use the GPT cloud plugin.  Contact your NVIDIA NVIGI developer relations representative for details if you have not been provided one.
   - If you wish to use OpenAI cloud models, an OpenAI account API key is needed.
@@ -46,7 +45,7 @@ There are several steps that are required in order to be able to use all of the 
 
 The model directories under `<ROOT>/nvigi.models` will, in some cases, include a Windows batch file named `download.bat`.  Double-clicking these files will download publicly-available models that can be used in the sample once downloaded.  These are referred to as "manually downloaded" models.  Other directories will include a `README.txt` file that describes how to download and set up the model; these are commonly NVIDIA NGC models that require the developer to be signed into their authorized developer account on NGC in order to access them.  See the `README.txt` for the model in question for details.
 
-At the very least, in order to run the 3D Sample, we recommend downloading at **least** one `nvigi.plugin.asr.ggml`, one `nvigi.plugin.gpt.ggml` and one  `nvigi.plugin.tts.asqflow` to avoid an error dialog in the Sample that indicates no local models are available.
+At the very least, in order to run the 3D Sample, we recommend downloading at **least** one `nvigi.plugin.asr.ggml`, one `nvigi.plugin.gpt.ggml` and one  `nvigi.plugin.tts.asqflow-*` to avoid an error dialog in the Sample that indicates no local models are available.
 
 ### Setting up the GPT Cloud Plugin
 
@@ -103,33 +102,63 @@ You can customize this prompt using the `-systemPromptGPT` parameter.
 
 ### Using the Sample
 
-#### Main UI Page
+#### Main UI
 
 ```{image} docs/media/main_ui.png
 :alt: main_ui
 :align: center
 ```
 
-On launch, the sample will show a UI box on the left side of the window as shown above, and will show a 3D rendered scene at the same time.  This is the main UI mode.  At the top are GPU, system and performance info.  Directly below is the chat text window, which shows the results of GPT (and of ASR when used).  Below this are the interaction controls for ASR, GPT and TTS.  Details of their use are below.  At the bottom is a listing of the current models/backends in use and the "Model Settings..." button that switches to model selection and settings mode.
+On launch, the sample will show a UI box on the left side of the window as shown above, and will show a 3D rendered scene at the same time.  This is the main UI:
+- At the top are GPU, system and performance info.
+- Directly below is a listing of the current models/backends in use
+- Below this is the "App Settings" collapsable for setting priority modes and limiting the frame rate (Details below)
+- Next is the "Model Settings..." collapsable that allows switching models for each stage (Details below)
+- Finally, we have the interaction area:
+  - The chat text window, which shows the results of GPT (and of ASR when used).
+  - Below this are the interaction controls for ASR, GPT and TTS.  Details of their use are below.
+  - Below this are three performance numbers:
+    - End-to-end audio-to-text inference time for ASR
+    - Time from start of inference to first text response for GPT
+    - Time from first text input to first audio for TTS
 
-The main UI page includes controls that allow the user to type in queries to the LLM or record a spoken query to be converted to text by ASR, then passed to the LLM and finally passed to TTS.  In addition, the "Reset Chat" button clears the chat window **and** resets the LLM's history context, "forgetting" previous discussion.  Typed and spoken input is handled as follows:
+The main UI's interaction area includes controls that allow the user to type in queries to the LLM or record a spoken query to be converted to text by ASR, then passed to the LLM and finally passed to TTS.  In addition, the "Reset Chat" button clears the chat window **and** resets the LLM's history context, "forgetting" previous discussion.  Typed and spoken input is handled as follows:
 
 1. **Speech**.  Click the "Record" button to start recording (the "Record" button will be replaced by a "Stop" button.  Then, speak a question, and conclude by pressing the "Stop" button.  The ASR plugin will compute speech recognition and print the recognized text, which will then be sent to the LLM for a response that will be printed in the UI. In the case of the GPT plugin being deactivated, the text will be sent directly to TTS.  If the text returned from ASR is a form of "[BLANK AUDIO]", then check you Windows microphone settings, as the audio may not be getting routed correctly in Windows. To test different microphones, user should select microphone from Windows settings.  The model shipping with this release is the Whisper Small Multi-lingual, which supports a *wide* range of languages, with varying levels of quality/coverage.
 1. **Typing**.  Click in the small, blank text line at the bottom of the UI, type your query and press the Enter or Return key.  The text will be sent to the LLM and the result printed to the UI.
 If the GPT plugin is deactivated, the text will be sent directly to TTS. 
 1. **Text To Speech** By default, no TTS model is selected. Please choose one in the model settings to use TTS. The target voice can be changed through the UI.
 
-#### Model Settings UI Pages
+#### App Settings UI Panel
 
-To change the selected models, the UI provides two modes: Manual and Automatic.  To switch to the Settings page, click the "Model Settings..." triangle at the bottom of the Main UI page.  This will show the currently-enabled settings page, which initially defaults to the Manual Settings page:
+By expanding the "App Settings" caret, the user can access two sets of application-related settings:
+- A drop-down to set the 3D-vs-compute/inference prioritization to one of the following: 
+    - Prioritize Graphics: Give more GPU priority to 3D rendering, at the expensive of inference latency
+    - Prioritize Inference: Give more GPU priority to compute, improving inference latency at the potential expense of rendering time (Does not currently affect Vulkan backend plugins)
+    - Balanced: A more even split between the two
+
+```{image} docs/media/app_settings_ui.png
+:alt: app_settings_ui
+:align: center
+```
+
+- An option frame-rate limiter.  If the "Frame Rate Limiter" box is checked, a typein allows the user to specify the max frame rate for rendering to avoid the sample (and its minimal 3D load) running at many hundreds of FPS.
+
+```{image} docs/media/app_settings_fps_ui.png
+:alt: app_settings_fps_ui
+:align: center
+```
+
+#### Model Settings UI Panels
+
+To change the selected models, the UI provides two modes: Manual and Automatic.  To expand the Settings panel, click the "Model Settings..." triangle on the Main UI.  This will show the currently-enabled settings panel, which initially defaults to the Manual Settings panel.  It will also shorten the text results box to make space.  Note that when a given AI feature is actively running (e.g. an LLM is generating text), that feature's settings will be grayed (and disabled for interaction).
 
 ```{image} docs/media/maual_settings_ui.png
 :alt: manual_settings_ui
 :align: center
 ```
 
-Upon switching to the Manual Settings page, the UI contains:
-- The current stats as shown in the Main UI page
+Upon expanding the Manual Settings panel, the UI adds:
 - A checkbox to switch between the Manual and Automatic backend selection modes
 - The currently-selected model/backend pairs for each feature
 - Drop-downs to select a model/backend pairing for each feature
@@ -147,14 +176,14 @@ Selecting each type of model behaves slightly differently:
 - Selecting locally-available models will immediately load the model from disk.  This will disable ASR or GPT or TTS until the new model is loaded, as the sample shuts down the previous model before loading the new one.  
 - Selecting a cloud model will make a connection to the cloud.  Generally, the UI will be immediately available again, as there is no local loading to be done.
 
-Clicking the "Automatic Backend Selection" checkbox will switch to the Automatic Settings page:
+Clicking the "Automatic Backend Selection" checkbox will switch to the Automatic Settings panel:
 
 ```{image} docs/media/auto_settings_ui.png
 :alt: auto_settings_ui
 :align: center
 ```
 
-This page is similar to the Manual Settings UI with some important differences:
+This panel is similar to the Manual Settings UI with some important differences:
 - Each feature dropdown only shows models, not backends.  Each model will appear once
 - Each feature has an integer VRAM budget adjustment that sets the amount of VRAM that the model may use.
 
@@ -187,10 +216,10 @@ These logs include such information as; Creation, System Information/Capabilitie
 [2024-06-13 08:57:14.706][nvigi][info][framework.cpp:486][nvigiInitImpl] Overriding settings with parameters from 'E:\sample\_bin\/nvigi.core.framework.json'
 [2024-06-13 08:57:14.707][nvigi][info][framework.cpp:512][nvigiInitImpl] Starting 'nvigi.core.framework':
 [2024-06-13 08:57:14.707][nvigi][info][framework.cpp:513][nvigiInitImpl] # timestamp: Mon Jun 10 16:39:03 2024
-[2024-06-13 08:57:14.707][nvigi][info][framework.cpp:514][nvigiInitImpl] # version: 1.1.0
+[2024-06-13 08:57:14.707][nvigi][info][framework.cpp:514][nvigiInitImpl] # version: 1.2.0
 [2024-06-13 08:57:14.707][nvigi][info][framework.cpp:515][nvigiInitImpl] # build: branch  - sha 5261ff60dc5fcf6c53392cbed01d2205bf911199
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:516][nvigiInitImpl] # author: NVIDIA
-[2024-06-13 08:57:14.708][nvigi][info][framework.cpp:517][nvigiInitImpl] # host SDK: 1.1.0
+[2024-06-13 08:57:14.708][nvigi][info][framework.cpp:517][nvigiInitImpl] # host SDK: 1.2.0
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:101][addInterface] [nvigi.core.framework] added interface '8ffd0ca2-62a0-4f4a-8840e27e3ff4f75f'
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:101][addInterface] [nvigi.core.framework] added interface '8a6572e0-f713-44c7-a2bf8493a9499eb2'
 [2024-06-13 08:57:14.708][nvigi][info][framework.cpp:101][addInterface] [nvigi.core.framework] added interface '75e7a7bb-ca10-45a8-966db99000d6ea35'
@@ -209,7 +238,7 @@ These logs include such information as; Creation, System Information/Capabilitie
 [2024-06-13 08:57:14.742][nvigi][info][framework.cpp:301][enumeratePlugins] # id: 2654567f-2cf4-4e4e-95455da839695c43
 [2024-06-13 08:57:14.743][nvigi][info][framework.cpp:302][enumeratePlugins] # crc24: 0x87c5d4
 [2024-06-13 08:57:14.744][nvigi][info][framework.cpp:303][enumeratePlugins] # description: 'ggml backend implementation for the 'asr' inference'
-[2024-06-13 08:57:14.745][nvigi][info][framework.cpp:304][enumeratePlugins] # version: 1.1.0
+[2024-06-13 08:57:14.745][nvigi][info][framework.cpp:304][enumeratePlugins] # version: 1.2.0
 [2024-06-13 08:57:14.745][nvigi][info][framework.cpp:305][enumeratePlugins] # build: branch  - sha 5261ff60dc5fcf6c53392cbed01d2205bf911199
 [2024-06-13 08:57:14.746][nvigi][info][framework.cpp:306][enumeratePlugins] # author: 'NVIDIA'
 [2024-06-13 08:57:14.746][nvigi][info][framework.cpp:309][enumeratePlugins] # interface: {f0038a35-eec2-4230-811d58c9498671bc} v1
@@ -256,6 +285,8 @@ If they *do not* already exist, the following junctions would be needed/expected
 
 In order to build the Sample from git-pulled source components, you will need to build and package NVIGI Core into a "Runtime SDK" and build and package the SDK Plugins.
 
+**NOTE: In most cases, it is possible to simply pull and follow the instructions in the NVIGI Source release repo, which includes docs and scripts for building and packaging Core, SDK plugins and the Sample from source**
+
 ##### Setting up NVIGI Core
 
 If you are building core and the plugins from scratch, then you will have already built and packaged an NVIGI Core "PDK".  However, unlike building plugins, the sample is an app and builds against the Core packaged as a "Core Runtime".  This is easy to do.  Assuming that the git-pulled core tree is rooted at a location we will call `<CORE_ROOT>`, the steps are:
@@ -267,7 +298,7 @@ If you are building core and the plugins from scratch, then you will have alread
 
 ##### Setting up the NVIGI SDK Plugins
 
-Assuming that the git-pulled plugins tree is rooted at a location we will call `<PLUGINS_ROOT>`, the steps are:
+Assuming that the git-pulled plugins SOURCE tree is rooted at a location we will call `<PLUGINS_ROOT>`, the steps are:
 
 1. Batch-build all confgurations of the plugins SDK as per the SDK documentation
 2. Open a VS Development Command Prompt to `<PLUGINS_ROOT>`
@@ -323,14 +354,15 @@ A subset including the most interesting options to the most common users:
 
 Arguments                        | Effect
 ---                              | ---
-`-pathToModels`                 | Required for just about any use - documented above, should point to the downloaded and unzipped models tree
-`-logToFile <directory>`        | Enables logging to file and sets the destination directory for logging.  The log will be written to `<directory>/nvigi-log.txt` **NOTE** Currently, this directory must be pre-existing.  The Sample will not auto-create it.
+`-pathToModels`                 | Required for just about any use - documented above, should point to the downloaded and unzipped models tree. Defaults to `<EXE_PATH>/../../nvigi.models`
+`-logToFile <directory>`        | Sets the destination directory for logging.  The log will be written to `<directory>/nvigi-log.txt` **NOTE** Currently, this directory must be pre-existing.  The Sample will not auto-create it.  Defaults to `<EXE_PATH>`
 `-systemPromptGPT <system prompt>` | Sets system prompt for the LLM model. Default : See the "Launching the Sample" section.
 
 ### More Useful Command Line Arguments: 
 
 Arguments                                                                                 | Effect
 ---                                                                                       | ---
+-vk                                                                                       | Use Vulkan for rendering and show only vulkan-compatible NVIGI plugins
 -width 1920                                                                               | Sets width
 -height 1080                                                                              | Sets height
 -verbose                                                                                  | Allows vebose info level logging logging
@@ -343,10 +375,11 @@ Arguments                                                                       
 
 
 ## Multiple backends support
-Using NVIGI, it's possible to support multiple backends within single application. Sample app shows one such usecase using GGML and ONNX GenAI DirectML based backends. Support for multiple backends ensures application developer can create wide variety of inference pipelines. In the sample, based on user selection, particular type of backend is instantiated and used for inferencing.
+Using NVIGI, it's possible to support multiple backends within single application. Sample app shows one such usecase using GGML CPU, CUDA, Vulkan and D3D12-based backends. Support for multiple backends ensures application developer can create wide variety of inference pipelines. In the sample, based on user selection, particular type of backend is instantiated and used for inferencing.
 
 ## Release Notes:
 
+- The Vulkan rendering mode and its associated inference are experimental at this time
 - The current release has a significantly different layout and structure than what was shipped in the Early Access packs.  This includes:
   - Updated to the new, split architecture of NVIGI, which makes the core, and the main AI plugins each more independent.
   - Added support for the UI to show a range of available models, including those that can be manually downloaded outside of the Sample.
